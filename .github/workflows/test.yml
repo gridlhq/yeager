@@ -13,6 +13,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +44,7 @@ jobs:
       - uses: golangci/golangci-lint-action@v6
         with:
           install-mode: goinstall
-          version: v1.64.8
+          version: v2.1.6
 
   build:
     runs-on: ubuntu-latest
