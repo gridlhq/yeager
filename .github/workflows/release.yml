@@ -1,0 +1,159 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  npm-publish:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          mkdir -p /tmp/release
+          gh release download "v${VERSION}" --dir /tmp/release
+
+      - name: Package platform binaries
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+
+          # Map goreleaser archive names to npm package dirs.
+          declare -A PLATFORM_MAP=(
+            ["yeager_${VERSION}_darwin_arm64.tar.gz"]="npm/@yeager/darwin-arm64"
+            ["yeager_${VERSION}_darwin_amd64.tar.gz"]="npm/@yeager/darwin-x64"
+            ["yeager_${VERSION}_linux_arm64.tar.gz"]="npm/@yeager/linux-arm64"
+            ["yeager_${VERSION}_linux_amd64.tar.gz"]="npm/@yeager/linux-x64"
+            ["yeager_${VERSION}_windows_arm64.zip"]="npm/@yeager/win32-arm64"
+            ["yeager_${VERSION}_windows_amd64.zip"]="npm/@yeager/win32-x64"
+          )
+
+          for archive in "${!PLATFORM_MAP[@]}"; do
+            pkg_dir="${PLATFORM_MAP[$archive]}"
+            mkdir -p "${pkg_dir}/bin"
+
+            if [[ "$archive" == *.zip ]]; then
+              unzip -o "/tmp/release/${archive}" -d "${pkg_dir}/bin/"
+            else
+              tar -xzf "/tmp/release/${archive}" -C "${pkg_dir}/bin/" yg
+            fi
+
+            # Update version in package.json.
+            jq --arg v "$VERSION" '.version = $v' "${pkg_dir}/package.json" > "${pkg_dir}/package.json.tmp"
+            mv "${pkg_dir}/package.json.tmp" "${pkg_dir}/package.json"
+          done
+
+          # Update main package version.
+          jq --arg v "$VERSION" '
+            .version = $v |
+            .optionalDependencies = (.optionalDependencies | to_entries | map(.value = $v) | from_entries)
+          ' npm/yeager/package.json > npm/yeager/package.json.tmp
+          mv npm/yeager/package.json.tmp npm/yeager/package.json
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in npm/@yeager/*/; do
+            cd "$dir"
+            npm publish --access public || true
+            cd -
+          done
+
+      - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm/yeager
+          npm publish --access public
+
+  update-homebrew:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "v${{ steps.version.outputs.VERSION }}" \
+            --pattern "checksums.txt" --dir /tmp/release
+
+      - name: Update Homebrew formula
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          CHECKSUMS="/tmp/release/checksums.txt"
+
+          SHA_DARWIN_ARM64=$(grep "darwin_arm64" "$CHECKSUMS" | awk '{print $1}')
+          SHA_DARWIN_AMD64=$(grep "darwin_amd64" "$CHECKSUMS" | awk '{print $1}')
+          SHA_LINUX_ARM64=$(grep "linux_arm64" "$CHECKSUMS" | awk '{print $1}')
+          SHA_LINUX_AMD64=$(grep "linux_amd64" "$CHECKSUMS" | awk '{print $1}')
+
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" homebrew-tap/yeager.rb
+
+          # Update SHA256 values (in order of appearance in the formula).
+          python3 -c "
+          import re
+          content = open('homebrew-tap/yeager.rb').read()
+          shas = ['$SHA_DARWIN_ARM64', '$SHA_DARWIN_AMD64', '$SHA_LINUX_ARM64', '$SHA_LINUX_AMD64']
+          i = 0
+          def replacer(m):
+              global i
+              result = f'sha256 \"{shas[i]}\"'
+              i += 1
+              return result
+          content = re.sub(r'sha256 \"[A-Fa-f0-9]+\"|sha256 \"PLACEHOLDER\"', replacer, content)
+          open('homebrew-tap/yeager.rb', 'w').write(content)
+          "
+
+      - name: Commit updated formula
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add homebrew-tap/yeager.rb
+          git diff --staged --quiet || git commit -m "brew: update to v${{ steps.version.outputs.VERSION }}"
+          git push

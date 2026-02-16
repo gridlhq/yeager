@@ -1,0 +1,49 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - staticcheck
+    - govet
+    - gosec
+    - bodyclose
+    - noctx
+    - errorlint
+    - revive
+    - misspell
+    - gocritic
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+    gosec:
+      excludes:
+        - G104
+        - G301
+        - G304
+        - G306
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Writer).Write
+
+  exclusions:
+    paths:
+      - _dev
+      - IGNORE_ME_archived
+      - third_party
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
