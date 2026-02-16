@@ -56,13 +56,20 @@ func RunStatus(ctx context.Context, cc *cmdContext) error {
 		return nil
 	}
 
-	// Display live state.
+	// Display live state with cost information.
+	vmSize := cc.Config.Compute.Size
+	cost := provider.CostPerHour(vmSize)
+	costStr := ""
+	if cost > 0.0 {
+		costStr = fmt.Sprintf(", %s", provider.FormatCost(cost))
+	}
+
 	switch info.State {
 	case "running":
 		if info.PublicIP != "" {
-			w.Infof("VM: %s (running, %s, %s)", info.InstanceID, info.Region, info.PublicIP)
+			w.Infof("VM: %s (running, %s, %s, %s%s)", info.InstanceID, info.Region, vmSize, info.PublicIP, costStr)
 		} else {
-			w.Infof("VM: %s (running, %s)", info.InstanceID, info.Region)
+			w.Infof("VM: %s (running, %s, %s%s)", info.InstanceID, info.Region, vmSize, costStr)
 		}
 
 		// Show active commands (best-effort via SSH).

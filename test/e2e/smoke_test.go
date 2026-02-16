@@ -21,12 +21,11 @@ func TestE2E_BinaryVersionOutput(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "yg --version failed: %s", output)
 
-	out := string(output)
-	// Should contain "yg version" or just a version string.
-	assert.True(t, strings.Contains(out, "yg") || strings.Contains(out, "version"),
-		"expected version output, got: %s", out)
-	// Should not be empty or "dev" (unless we're running from source).
-	assert.NotEmpty(t, strings.TrimSpace(out))
+	out := strings.TrimSpace(string(output))
+	// Cobra outputs "yg version <version>". The version is "dev" when
+	// built from source or a semver like "0.5.0" from goreleaser.
+	assert.Contains(t, out, "yg version",
+		"expected 'yg version <ver>' format, got: %s", out)
 }
 
 // TestE2E_HelpOutput verifies --help shows all subcommands.

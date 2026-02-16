@@ -135,6 +135,10 @@ func TestEnsureVMRunning_CreatesNewVM(t *testing.T) {
 	assert.Equal(t, "5.6.7.8", info.PublicIP)
 	assert.Contains(t, stdout.String(), "creating one")
 	assert.Contains(t, stdout.String(), "VM running")
+
+	// Verify cost indicator is shown during VM creation.
+	assert.Contains(t, stdout.String(), "VM size: medium")
+	assert.Contains(t, stdout.String(), "~$0.034/hr")
 }
 
 func TestEnsureVMRunning_StartsStoppedVM(t *testing.T) {

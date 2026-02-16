@@ -75,11 +75,14 @@ func TestE2E_ConcurrentStatus(t *testing.T) {
 	// Give the command time to start on the VM.
 	time.Sleep(5 * time.Second)
 
-	// Check status — should show an active command.
+	// Check status — should show an active command or recent run.
+	// The background command may have finished by the time status runs,
+	// so we check for either active commands or recent runs.
 	statusOut := runFKSuccess(t, dir, 30*time.Second, "status")
-	if !strings.Contains(statusOut, "active commands") {
-		t.Logf("status output did not show active commands (command may have finished):\n%s", statusOut)
-	}
+	hasActive := strings.Contains(statusOut, "active commands")
+	hasRecent := strings.Contains(statusOut, "recent runs:")
+	assert.True(t, hasActive || hasRecent,
+		"status should show active commands or recent runs, got:\n%s", truncate(statusOut, 500))
 
 	// Wait for the background command to finish.
 	cmd.Wait()

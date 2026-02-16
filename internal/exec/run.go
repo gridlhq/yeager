@@ -110,13 +110,12 @@ func Run(client *gossh.Client, opts RunOpts, stdout, stderr io.Writer) (*RunResu
 	if err != nil {
 		return nil, fmt.Errorf("creating SSH session: %w", err)
 	}
+	defer launchSession.Close()
 
 	tmuxCmd := buildTmuxCommand(opts)
 	if err := launchSession.Run(tmuxCmd); err != nil {
-		launchSession.Close()
 		return nil, fmt.Errorf("starting tmux session: %w", err)
 	}
-	launchSession.Close()
 
 	// Step 2: Tail the log file to stream output back to the caller.
 	// This is a separate SSH session so that if it drops, the tmux keeps running.

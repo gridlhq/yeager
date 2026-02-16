@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -102,13 +103,22 @@ func (s *Store) DeleteVM(projectHash string) error {
 }
 
 // SaveLastRun records the most recent run ID for a project.
+// Uses atomic write (temp + rename) to avoid corruption from concurrent writers.
 func (s *Store) SaveLastRun(projectHash, runID string) error {
 	dir := s.projectDir(projectHash)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating state directory: %w", err)
 	}
 	target := filepath.Join(dir, "last_run")
-	return os.WriteFile(target, []byte(runID), 0o644)
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, []byte(runID), 0o644); err != nil {
+		return fmt.Errorf("writing temp last_run file: %w", err)
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp) //nolint:errcheck // best-effort cleanup
+		return fmt.Errorf("renaming last_run file: %w", err)
+	}
+	return nil
 }
 
 // LoadLastRun returns the most recent run ID for a project.
@@ -119,7 +129,7 @@ func (s *Store) LoadLastRun(projectHash string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	return strings.TrimSpace(string(data)), nil
 }
 
 // RunHistoryEntry records a completed run.

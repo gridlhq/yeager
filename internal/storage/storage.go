@@ -98,7 +98,7 @@ func (s *Store) DownloadMeta(ctx context.Context, projectName, runID string) (*R
 	key := S3Key(projectName, runID, "meta.json")
 	data, err := s.getObject(ctx, key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("downloading meta.json: %w", err)
 	}
 
 	var meta RunMeta

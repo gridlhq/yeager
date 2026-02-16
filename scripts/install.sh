@@ -178,6 +178,22 @@ main() {
         log "installed to ${install_dir}/${BINARY_NAME}"
         log "make sure ${install_dir} is in your PATH"
     fi
+
+    # Post-install guidance.
+    log ""
+    log "next steps:"
+    log "  1. configure AWS credentials: aws configure"
+    log "  2. run your first command: yg cargo test"
+    log ""
+
+    # Check for rsync (non-blocking).
+    if ! has_cmd rsync; then
+        log "warning: rsync not found. yeager requires rsync for file sync."
+        log "  • macOS: rsync is pre-installed"
+        log "  • Ubuntu/Debian: sudo apt install rsync"
+        log "  • Fedora/RHEL: sudo dnf install rsync"
+        log ""
+    fi
 }
 
 main

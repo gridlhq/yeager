@@ -1,24 +1,81 @@
-# 🛩️ Yeager
+# Yeager
 
-[![Beta](https://img.shields.io/badge/beta-orange?style=for-the-badge)](#limitations)
-[![CI](https://img.shields.io/github/actions/workflow/status/gridlhq/yeager/test.yml?branch=main&label=CI&style=flat-square)](https://github.com/gridlhq/yeager/actions/workflows/test.yml)
-[![Release](https://img.shields.io/github/v/release/gridlhq/yeager?include_prereleases&style=flat-square&label=release)](https://github.com/gridlhq/yeager/releases)
+[![CI](https://github.com/gridlhq/yeager/actions/workflows/test.yml/badge.svg)](https://github.com/gridlhq/yeager/actions/workflows/test.yml)
+[![Release](https://github.com/gridlhq/yeager/actions/workflows/release.yml/badge.svg)](https://github.com/gridlhq/yeager/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Status: Beta](https://img.shields.io/badge/Status-Beta-orange)](https://github.com/gridlhq/yeager)
 
 Prefix any command with `yg`. It runs on a cloud VM instead of your laptop.
 
-```
-$ yg cargo test
-yeager | syncing 3 files...
-yeager | running: cargo test
-yeager | ─────────────────────────────────────────────
+## Quickstart
 
-test result: ok. 42 passed; 0 failed; 0 ignored
-
-yeager | ─────────────────────────────────────────────
-yeager | exit 0 — 14s
+```bash
+curl -fsSL https://yeager.sh/install | sh
+yg pytest
 ```
 
-No setup. No config files. No Docker. No git.
+That's it. First run takes ~2 min (VM creation). After that, instant.
+
+---
+
+## How it works
+
+Detects language from manifest files (Cargo.toml, package.json, go.mod, etc.), launches an ARM64 EC2 instance with the right toolchain, syncs via rsync, runs the command, streams output back.
+
+VM persists across runs — caches and build artifacts carry over. Auto-stops after 10 min idle, auto-starts on next `yg`.
+
+**Ctrl+C detaches, doesn't kill.** Use `yg logs` to re-attach or `yg kill` to cancel.
+
+## Prerequisites
+
+- macOS or Linux
+- rsync (pre-installed on macOS, `apt install rsync` on Linux)
+- AWS credentials (`aws configure`)
+
+Creates EC2 instances, an S3 bucket, and a security group in your account.
+
+<details>
+<summary>Minimum IAM permissions</summary>
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances", "ec2:DescribeInstances", "ec2:StartInstances",
+        "ec2:StopInstances", "ec2:TerminateInstances", "ec2:CreateSecurityGroup",
+        "ec2:DescribeSecurityGroups", "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateTags", "ec2:DescribeImages"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket", "s3:PutBucketLifecycleConfiguration",
+        "s3:HeadBucket", "s3:PutObject", "s3:GetObject"
+      ],
+      "Resource": ["arn:aws:s3:::yeager-*", "arn:aws:s3:::yeager-*/*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ec2-instance-connect:SendSSHPublicKey"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["sts:GetCallerIdentity"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+IAM → Users → Create user → Programmatic access → attach the above policy → `aws configure` with new creds.
+
+</details>
 
 ## Install
 
@@ -26,44 +83,18 @@ No setup. No config files. No Docker. No git.
 curl -fsSL https://yeager.sh/install | sh
 ```
 
-<details>
-<summary>npm or Homebrew</summary>
-
-```bash
-npm install -g yeager
-```
-
-```bash
-brew install yeager
-```
-
-</details>
-
-Needs AWS credentials — the same ones your `aws` CLI uses.
-
-## First run
-
-```bash
-yg cargo test
-```
-
-That's it. Yeager:
-
-1. Detects your language from manifest files (Cargo.toml, package.json, go.mod, etc.)
-2. Launches an ARM64 EC2 instance with the right toolchain
-3. Syncs your project via rsync
-4. Runs the command, streams output back in real time
-
-The VM persists. Caches, tools, build artifacts accumulate across runs. Auto-stops after 10 min idle, auto-starts on next `yg`.
-
 ## Usage
 
 ```bash
 yg <any command>         # run on the VM
 yg status                # what's running
-yg logs                  # replay last completed run
-yg stop                  # stop VM (restarts instantly)
+yg logs                  # replay + stream last run
+yg logs --tail 50        # last 50 lines, then stream
+yg kill                  # cancel a running command
+yg stop                  # stop VM (no cost when stopped)
 yg destroy               # tear it down
+yg up                    # boot VM without running anything
+yg init                  # generate .yeager.toml
 ```
 
 Multiple commands run concurrently from different terminals.
@@ -77,15 +108,15 @@ Multiple commands run concurrently from different terminals.
 | `large` | 8 | 16 GB | ~$0.07 |
 | `xlarge` | 16 | 32 GB | ~$0.13 |
 
-ARM64 Graviton. Default: `medium`.
+ARM64 Graviton. Default: `medium`. Typical 2-hour session: ~$0.07.
 
 ## Config
 
-Zero config works for most projects. Optional `.yeager.toml` for the rest:
+Zero config by default. Optional `.yeager.toml`:
 
 ```toml
 [compute]
-size = "large"           # small | medium | large | xlarge
+size = "large"
 
 [setup]
 packages = ["libpq-dev"]
@@ -99,32 +130,28 @@ paths = ["coverage/"]
 
 `yg init` generates a commented config with every option.
 
-## All commands
+## Troubleshooting
 
-| Command | |
-|---|---|
-| `yg <cmd>` | Run on VM (creates it if needed) |
-| `yg status` | VM state + active commands |
-| `yg logs [run-id]` | Replay completed run output |
-| `yg logs --tail N` | Last N lines |
-| `yg kill [run-id]` | Cancel a command |
-| `yg stop` | Stop VM (keeps disk, no cost) |
-| `yg destroy` | Terminate + clean up |
-| `yg up` | Boot VM without running anything |
-| `yg init` | Generate `.yeager.toml` |
+**AWS creds:** `aws configure` or set `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`.
 
-## Under the hood
+**rsync:** `apt install rsync` (Linux) or `brew install rsync` (macOS).
 
-Single Go binary, ~15 MB. Direct AWS SDK — no Terraform, no CloudFormation. rsync over SSH for file sync. EC2 Instance Connect with ephemeral Ed25519 keys generated in memory, never written to disk. One EC2 instance per project, shared S3 bucket for output.
+**Missing deps:** Add to `.yeager.toml` under `[setup] packages`, then `yg destroy && yg up`.
+
+**Debug:** `yg --verbose <command>`. First boot takes 2-3 min (cloud-init installing toolchains).
 
 ## Limitations
 
-Beta. It works, but:
+Beta.
 
-- **Ctrl+C kills the remote command.** No disconnect resilience yet — network drops or closing your laptop kill it too. tmux wrapping is next.
-- **Can't re-attach to running commands.** `yg logs` only replays completed runs from S3.
-- **Setup changes require `yg destroy`.** Changing `[setup]` means losing cached build artifacts.
-- **AWS only.** GCP and Azure planned.
+- Setup changes require `yg destroy`
+- AWS only (GCP/Azure planned)
+- macOS/Linux only (Windows planned)
+- No team features yet
+
+## Under the hood
+
+Single Go binary, ~15 MB. Direct AWS SDK — no Terraform, no CloudFormation. rsync over SSH. EC2 Instance Connect with ephemeral Ed25519 keys (never on disk). One instance per project dir. tmux for disconnect resilience.
 
 ## License
 

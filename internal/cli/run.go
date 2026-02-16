@@ -51,6 +51,9 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 	}
 
 	// Step 3: Establish SSH connection for command execution.
+	if freshVM {
+		w.Info("installing toolchain (this runs once per VM)...")
+	}
 	w.Info("connecting...")
 	client, err := cc.ConnectSSH(ctx, vmInfo)
 	if err != nil {
@@ -214,7 +217,10 @@ func ensureVMRunning(ctx context.Context, cc *cmdContext) (*provider.VMInfo, boo
 					return nil, false, err
 				}
 				w.Info("waiting for VM to be ready...")
-				if err := cc.Provider.WaitUntilRunning(ctx, info.InstanceID); err != nil {
+				err := cc.Provider.WaitUntilRunningWithProgress(ctx, info.InstanceID, func(elapsed time.Duration) {
+					w.Info(provider.FormatProgressMessage(elapsed))
+				})
+				if err != nil {
 					return nil, false, err
 				}
 				// Re-query for updated IP and AZ.
@@ -225,8 +231,11 @@ func ensureVMRunning(ctx context.Context, cc *cmdContext) (*provider.VMInfo, boo
 				w.Infof("VM running (%s)", info.InstanceID)
 				return info, false, nil
 			case "pending":
-				w.Infof("VM starting (%s) — waiting...", info.InstanceID)
-				if err := cc.Provider.WaitUntilRunning(ctx, info.InstanceID); err != nil {
+				w.Infof("VM starting (%s)...", info.InstanceID)
+				err := cc.Provider.WaitUntilRunningWithProgress(ctx, info.InstanceID, func(elapsed time.Duration) {
+					w.Info(provider.FormatProgressMessage(elapsed))
+				})
+				if err != nil {
 					return nil, false, err
 				}
 				info, err = cc.Provider.FindVM(ctx, cc.Project.Hash)
@@ -270,7 +279,17 @@ func createVMForRun(ctx context.Context, cc *cmdContext) (*provider.VMInfo, erro
 		return nil, err
 	}
 
-	w.Infof("VM size: %s", cc.Config.Compute.Size)
+	// Display VM size with cost and specs.
+	cost := provider.CostPerHour(cc.Config.Compute.Size)
+	instanceType, _ := provider.InstanceTypeForSize(cc.Config.Compute.Size)
+	vcpu, mem := provider.InstanceSpecs(instanceType)
+
+	if cost > 0.0 && vcpu != "" {
+		w.Infof("VM size: %s (%s, %s) %s", cc.Config.Compute.Size, vcpu, mem, provider.FormatCost(cost))
+	} else {
+		w.Infof("VM size: %s", cc.Config.Compute.Size)
+	}
+
 	w.Infof("launching instance... (%s)", cc.Provider.Region())
 
 	info, err := cc.Provider.CreateVM(ctx, provider.CreateVMOpts{
@@ -285,7 +304,10 @@ func createVMForRun(ctx context.Context, cc *cmdContext) (*provider.VMInfo, erro
 	}
 
 	w.Infof("instance %s launched — waiting for it to be ready...", info.InstanceID)
-	if err := cc.Provider.WaitUntilRunning(ctx, info.InstanceID); err != nil {
+	err = cc.Provider.WaitUntilRunningWithProgress(ctx, info.InstanceID, func(elapsed time.Duration) {
+		w.Info(provider.FormatProgressMessage(elapsed))
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -377,7 +399,9 @@ func defaultSyncFunc(ctx context.Context, cc *cmdContext, vmInfo *provider.VMInf
 	cmd.Stderr = &rsyncErr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("rsync failed: %w\n%s", err, rsyncErr.String())
+		// Translate rsync error to user-friendly message
+		translated := fksync.TranslateRsyncError(err, rsyncErr.String())
+		return nil, translated
 	}
 
 	result := fksync.ParseStats(rsyncOut.String())

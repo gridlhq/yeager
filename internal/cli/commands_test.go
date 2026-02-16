@@ -96,6 +96,12 @@ func (m *mockProvider) WaitUntilRunning(ctx context.Context, instanceID string) 
 	}
 	return nil
 }
+func (m *mockProvider) WaitUntilRunningWithProgress(ctx context.Context, instanceID string, progressCallback provider.ProgressCallback) error {
+	if m.waitUntilRunningFn != nil {
+		return m.waitUntilRunningFn(ctx, instanceID)
+	}
+	return nil
+}
 func (m *mockProvider) Region() string {
 	if m.regionVal != "" {
 		return m.regionVal
@@ -179,6 +185,8 @@ func TestRunStatus(t *testing.T) {
 		assert.Contains(t, stdout.String(), "i-run001")
 		assert.Contains(t, stdout.String(), "running")
 		assert.Contains(t, stdout.String(), "1.2.3.4")
+		// Cost indicator should appear for running VMs.
+		assert.Contains(t, stdout.String(), "~$0.034/hr")
 	})
 
 	t.Run("stopped VM suggests yg up", func(t *testing.T) {
@@ -733,6 +741,65 @@ func TestRunDestroy(t *testing.T) {
 		err := RunDestroy(context.Background(), cc)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "terminate denied")
+	})
+
+	t.Run("shows warning about data loss without --force", func(t *testing.T) {
+		t.Parallel()
+		prov := &mockProvider{
+			findVMFn: func(ctx context.Context, projectHash string) (*provider.VMInfo, error) {
+				return &provider.VMInfo{
+					InstanceID: "i-warn001",
+					State:      "running",
+					Region:     "us-east-1",
+				}, nil
+			},
+		}
+		cc, stdout, _ := testCmdContext(t, prov)
+		saveTestVMState(t, cc.State, cc.Project.Hash)
+
+		// Without --force, should show warning and exit without destroying
+		err := RunDestroyWithOptions(context.Background(), cc, DestroyOptions{Force: false})
+		require.NoError(t, err, "should exit cleanly with warning, not error")
+		output := stdout.String()
+		assert.Contains(t, output, "warning:", "should show warning")
+		assert.Contains(t, output, "cached build artifacts", "should mention cached artifacts")
+		assert.Contains(t, output, "installed packages", "should mention installed packages")
+		assert.Contains(t, output, "accumulated state", "should mention accumulated state")
+		assert.Contains(t, output, "--force", "should mention --force flag")
+
+		// VM should still exist (not destroyed)
+		_, loadErr := cc.State.LoadVM(cc.Project.Hash)
+		require.NoError(t, loadErr, "state file should still exist when destroy is cancelled")
+	})
+
+	t.Run("proceeds with --force flag", func(t *testing.T) {
+		t.Parallel()
+		terminateCalled := false
+		prov := &mockProvider{
+			findVMFn: func(ctx context.Context, projectHash string) (*provider.VMInfo, error) {
+				return &provider.VMInfo{
+					InstanceID: "i-force001",
+					State:      "running",
+					Region:     "us-east-1",
+				}, nil
+			},
+			terminateVMFn: func(ctx context.Context, instanceID string) error {
+				terminateCalled = true
+				return nil
+			},
+		}
+		cc, stdout, _ := testCmdContext(t, prov)
+		saveTestVMState(t, cc.State, cc.Project.Hash)
+
+		// With --force, should proceed without warning
+		err := RunDestroyWithOptions(context.Background(), cc, DestroyOptions{Force: true})
+		require.NoError(t, err)
+		assert.True(t, terminateCalled, "VM should be terminated with --force")
+		assert.Contains(t, stdout.String(), "destroyed")
+
+		// VM state should be cleaned up
+		_, loadErr := cc.State.LoadVM(cc.Project.Hash)
+		require.Error(t, loadErr, "state file should be deleted after destroy")
 	})
 }
 

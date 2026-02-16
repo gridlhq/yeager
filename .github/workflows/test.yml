@@ -26,15 +26,30 @@ jobs:
       - name: Install rsync
         run: sudo apt-get install -y rsync
 
-      - name: Run tests
-        run: go test ./...
-
       - name: Run tests with race detector
         run: go test -race ./...
 
+      - name: Run tests with coverage
+        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Check coverage threshold
+        run: |
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          threshold=75
+          if (( $(echo "$coverage < $threshold" | bc -l) )); then
+            echo "Coverage $coverage% is below threshold $threshold%"
+            exit 1
+          fi
+          echo "Coverage: $coverage% (threshold: $threshold%)"
+
+      - name: Upload coverage to artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+
   lint:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +62,21 @@ jobs:
 
       - name: Run linter
         run: golangci-lint run
+
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run Python tests
+        run: python3 -m pytest rt3/test_rt.py -v
 
   build:
     runs-on: ubuntu-latest

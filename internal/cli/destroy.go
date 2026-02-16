@@ -10,24 +10,40 @@ import (
 )
 
 func newDestroyCmd(f *flags) *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "destroy",
 		Short: "Terminate the VM and clean up all resources",
 		Long: `Terminates the VM, deletes the EBS volume, and removes local state.
 The next command will create a fresh VM from scratch. S3 output history
-is not affected.`,
+is not affected.
+
+Use --force to skip the confirmation warning.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := resolveCmdContext(cmd.Context(), f.outputMode())
 			if err != nil {
 				return err
 			}
-			return RunDestroy(cmd.Context(), cc)
+			return RunDestroyWithOptions(cmd.Context(), cc, DestroyOptions{Force: force})
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation warning")
+	return cmd
 }
 
-// RunDestroy terminates the VM and deletes local state.
+// DestroyOptions controls destroy behavior.
+type DestroyOptions struct {
+	Force bool // Skip confirmation warning
+}
+
+// RunDestroy terminates the VM and deletes local state (backward-compatible, always forces).
 func RunDestroy(ctx context.Context, cc *cmdContext) error {
+	return RunDestroyWithOptions(ctx, cc, DestroyOptions{Force: true})
+}
+
+// RunDestroyWithOptions terminates the VM and deletes local state.
+// Without Force, shows a warning about data loss and exits without destroying.
+func RunDestroyWithOptions(ctx context.Context, cc *cmdContext, opts DestroyOptions) error {
 	w := cc.Output
 	w.Infof("project: %s", cc.Project.DisplayName)
 
@@ -38,6 +54,16 @@ func RunDestroy(ctx context.Context, cc *cmdContext) error {
 			return nil
 		}
 		return fmt.Errorf("loading VM state: %w", err)
+	}
+
+	if !opts.Force {
+		w.Info("warning: destroying this VM will permanently delete:")
+		w.Info("  - cached build artifacts")
+		w.Info("  - installed packages and toolchains")
+		w.Info("  - accumulated state from previous runs")
+		w.Info("")
+		w.Info("run again with --force to proceed")
+		return nil
 	}
 
 	// Try to terminate in AWS (best-effort — might already be gone).

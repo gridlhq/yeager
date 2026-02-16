@@ -440,16 +440,6 @@ func (p *AWSProvider) TerminateVM(ctx context.Context, instanceID string) error 
 	return nil
 }
 
-// WaitUntilRunning blocks until the instance is in "running" state.
-func (p *AWSProvider) WaitUntilRunning(ctx context.Context, instanceID string) error {
-	err := p.waiter.Wait(ctx, &ec2.DescribeInstancesInput{
-		InstanceIds: []string{instanceID},
-	}, waitTimeout)
-	if err != nil {
-		return fmt.Errorf("waiting for instance %s to be running: %w", instanceID, err)
-	}
-	return nil
-}
 
 // IsExpiredTokenError checks if an error is an expired credentials error.
 func IsExpiredTokenError(err error) bool {

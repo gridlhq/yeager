@@ -222,6 +222,24 @@ func TestLoadLastRun_NotExist(t *testing.T) {
 	assert.True(t, errors.Is(err, os.ErrNotExist))
 }
 
+func TestLoadLastRun_TrimsWhitespace(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewStore(t.TempDir())
+	require.NoError(t, err)
+
+	// Write a last_run file with trailing newline (simulates manual edit or corruption).
+	dir := filepath.Join(store.BaseDir(), "projects", "project-ws")
+	err = os.MkdirAll(dir, 0o755)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir, "last_run"), []byte("abc12345\n"), 0o644)
+	require.NoError(t, err)
+
+	got, err := store.LoadLastRun("project-ws")
+	require.NoError(t, err)
+	assert.Equal(t, "abc12345", got)
+}
+
 func TestSaveLastRun_Overwrite(t *testing.T) {
 	t.Parallel()
 

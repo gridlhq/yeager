@@ -123,6 +123,20 @@ func TestUploadOutput_Success(t *testing.T) {
 		}
 	}
 
+	// Verify body content for stdout.
+	if call, ok := byKey["my-app/abc12345/stdout.log"]; ok {
+		body, err := io.ReadAll(call.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "test output", string(body))
+	}
+
+	// Verify body content for stderr.
+	if call, ok := byKey["my-app/abc12345/stderr.log"]; ok {
+		body, err := io.ReadAll(call.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "some warnings", string(body))
+	}
+
 	// Verify body content for exit_code.
 	if call, ok := byKey["my-app/abc12345/exit_code"]; ok {
 		body, err := io.ReadAll(call.Body)

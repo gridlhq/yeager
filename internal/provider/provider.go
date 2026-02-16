@@ -44,6 +44,10 @@ type CloudProvider interface {
 	// WaitUntilRunning blocks until the instance is in "running" state.
 	WaitUntilRunning(ctx context.Context, instanceID string) error
 
+	// WaitUntilRunningWithProgress blocks until the instance is in "running" state,
+	// calling progressCallback periodically to report elapsed time.
+	WaitUntilRunningWithProgress(ctx context.Context, instanceID string, progressCallback ProgressCallback) error
+
 	// Region returns the configured AWS region.
 	Region() string
 
