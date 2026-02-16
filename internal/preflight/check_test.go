@@ -37,7 +37,7 @@ func TestCheckAWSCredentials(t *testing.T) {
 			homeDir:   "/home/test",
 			wantOK:    false,
 			wantMsg:   "no AWS credentials found",
-			wantFix:   "run: aws configure (or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables)",
+			wantFix:   "run: yg configure (or: aws configure, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)",
 		},
 		{
 			name:      "has access key ID",
@@ -60,7 +60,7 @@ func TestCheckAWSCredentials(t *testing.T) {
 			homeDir:   "/home/test",
 			wantOK:    false,
 			wantMsg:   "no AWS credentials found",
-			wantFix:   "run: aws configure (or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables)",
+			wantFix:   "run: yg configure (or: aws configure, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)",
 		},
 		{
 			name:      "has web identity token file",
@@ -90,7 +90,7 @@ func TestCheckAWSCredentials(t *testing.T) {
 			homeDir:   "/home/test",
 			wantOK:    false,
 			wantMsg:   "no AWS credentials found",
-			wantFix:   "run: aws configure (or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables)",
+			wantFix:   "run: yg configure (or: aws configure, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)",
 		},
 		{
 			name:      "empty home dir skips file check",
@@ -99,7 +99,7 @@ func TestCheckAWSCredentials(t *testing.T) {
 			homeDir:   "",
 			wantOK:    false,
 			wantMsg:   "no AWS credentials found",
-			wantFix:   "run: aws configure (or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables)",
+			wantFix:   "run: yg configure (or: aws configure, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)",
 		},
 	}
 

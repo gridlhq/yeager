@@ -105,7 +105,7 @@ func TestNpmMainPackage_HasRequiredFields(t *testing.T) {
 	var pkg map[string]interface{}
 	require.NoError(t, json.Unmarshal(data, &pkg))
 
-	assert.Equal(t, "yeager", pkg["name"])
+	assert.Equal(t, "@yeager.sh/cli", pkg["name"])
 	assert.NotEmpty(t, pkg["version"])
 	assert.NotEmpty(t, pkg["description"])
 	assert.NotEmpty(t, pkg["bin"])
@@ -127,12 +127,12 @@ func TestNpmMainPackage_HasAllPlatformDeps(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &pkg))
 
 	expectedPlatforms := []string{
-		"@yeager/darwin-arm64",
-		"@yeager/darwin-x64",
-		"@yeager/linux-arm64",
-		"@yeager/linux-x64",
-		"@yeager/win32-arm64",
-		"@yeager/win32-x64",
+		"@yeager.sh/darwin-arm64",
+		"@yeager.sh/darwin-x64",
+		"@yeager.sh/linux-arm64",
+		"@yeager.sh/linux-x64",
+		"@yeager.sh/win32-arm64",
+		"@yeager.sh/win32-x64",
 	}
 
 	for _, platform := range expectedPlatforms {
@@ -149,12 +149,12 @@ func TestNpmPlatformPackages_Valid(t *testing.T) {
 		os   string
 		cpu  string
 	}{
-		{"npm/@yeager/darwin-arm64", "darwin", "arm64"},
-		{"npm/@yeager/darwin-x64", "darwin", "x64"},
-		{"npm/@yeager/linux-arm64", "linux", "arm64"},
-		{"npm/@yeager/linux-x64", "linux", "x64"},
-		{"npm/@yeager/win32-arm64", "win32", "arm64"},
-		{"npm/@yeager/win32-x64", "win32", "x64"},
+		{"npm/@yeager.sh/darwin-arm64", "darwin", "arm64"},
+		{"npm/@yeager.sh/darwin-x64", "darwin", "x64"},
+		{"npm/@yeager.sh/linux-arm64", "linux", "arm64"},
+		{"npm/@yeager.sh/linux-x64", "linux", "x64"},
+		{"npm/@yeager.sh/win32-arm64", "win32", "arm64"},
+		{"npm/@yeager.sh/win32-x64", "win32", "x64"},
 	}
 
 	for _, p := range platforms {
@@ -291,12 +291,12 @@ func TestVersions_AllConsistent(t *testing.T) {
 
 	// Check all platform packages.
 	platformDirs := []string{
-		"npm/@yeager/darwin-arm64",
-		"npm/@yeager/darwin-x64",
-		"npm/@yeager/linux-arm64",
-		"npm/@yeager/linux-x64",
-		"npm/@yeager/win32-arm64",
-		"npm/@yeager/win32-x64",
+		"npm/@yeager.sh/darwin-arm64",
+		"npm/@yeager.sh/darwin-x64",
+		"npm/@yeager.sh/linux-arm64",
+		"npm/@yeager.sh/linux-x64",
+		"npm/@yeager.sh/win32-arm64",
+		"npm/@yeager.sh/win32-x64",
 	}
 
 	for _, dir := range platformDirs {

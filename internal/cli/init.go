@@ -46,7 +46,7 @@ func RunInit(dir string, force bool, mode output.Mode) error {
 				fmt.Sprintf("%s already exists", config.FileName),
 				"use --force to overwrite",
 			)
-			return fmt.Errorf("%s already exists (use --force to overwrite)", config.FileName)
+			return displayed(fmt.Errorf("%s already exists (use --force to overwrite)", config.FileName))
 		}
 	}
 

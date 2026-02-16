@@ -37,7 +37,7 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 	vmInfo, freshVM, err := ensureVMRunning(ctx, cc)
 	if err != nil {
 		printClassifiedError(w, err)
-		return 1, err
+		return 1, displayed(err)
 	}
 
 	// Step 2: Sync files.

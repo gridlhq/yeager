@@ -59,12 +59,12 @@ jobs:
 
           # Map goreleaser archive names to npm package dirs.
           declare -A PLATFORM_MAP=(
-            ["yeager_${VERSION}_darwin_arm64.tar.gz"]="npm/@yeager/darwin-arm64"
-            ["yeager_${VERSION}_darwin_amd64.tar.gz"]="npm/@yeager/darwin-x64"
-            ["yeager_${VERSION}_linux_arm64.tar.gz"]="npm/@yeager/linux-arm64"
-            ["yeager_${VERSION}_linux_amd64.tar.gz"]="npm/@yeager/linux-x64"
-            ["yeager_${VERSION}_windows_arm64.zip"]="npm/@yeager/win32-arm64"
-            ["yeager_${VERSION}_windows_amd64.zip"]="npm/@yeager/win32-x64"
+            ["yeager_${VERSION}_darwin_arm64.tar.gz"]="npm/@yeager.sh/darwin-arm64"
+            ["yeager_${VERSION}_darwin_amd64.tar.gz"]="npm/@yeager.sh/darwin-x64"
+            ["yeager_${VERSION}_linux_arm64.tar.gz"]="npm/@yeager.sh/linux-arm64"
+            ["yeager_${VERSION}_linux_amd64.tar.gz"]="npm/@yeager.sh/linux-x64"
+            ["yeager_${VERSION}_windows_arm64.zip"]="npm/@yeager.sh/win32-arm64"
+            ["yeager_${VERSION}_windows_amd64.zip"]="npm/@yeager.sh/win32-x64"
           )
 
           for archive in "${!PLATFORM_MAP[@]}"; do
@@ -93,7 +93,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for dir in npm/@yeager/*/; do
+          for dir in npm/@yeager.sh/*/; do
             cd "$dir"
             npm publish --access public || true
             cd -

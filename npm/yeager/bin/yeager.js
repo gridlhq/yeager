@@ -8,12 +8,12 @@ const os = require("os");
 
 // Platform package mapping (esbuild pattern).
 const PLATFORM_PACKAGES = {
-  "darwin-arm64": "@yeager/darwin-arm64",
-  "darwin-x64": "@yeager/darwin-x64",
-  "linux-arm64": "@yeager/linux-arm64",
-  "linux-x64": "@yeager/linux-x64",
-  "win32-arm64": "@yeager/win32-arm64",
-  "win32-x64": "@yeager/win32-x64",
+  "darwin-arm64": "@yeager.sh/darwin-arm64",
+  "darwin-x64": "@yeager.sh/darwin-x64",
+  "linux-arm64": "@yeager.sh/linux-arm64",
+  "linux-x64": "@yeager.sh/linux-x64",
+  "win32-arm64": "@yeager.sh/win32-arm64",
+  "win32-x64": "@yeager.sh/win32-x64",
 };
 
 function getBinaryPath() {
@@ -37,7 +37,7 @@ function getBinaryPath() {
   } catch {
     throw new Error(
       `yeager: platform package ${pkg} not installed. ` +
-        `Try reinstalling: npm install yeager`
+        `Try reinstalling: npm install @yeager.sh/cli`
     );
   }
 }

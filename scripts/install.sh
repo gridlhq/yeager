@@ -182,8 +182,12 @@ main() {
     # Post-install guidance.
     log ""
     log "next steps:"
-    log "  1. configure AWS credentials: aws configure"
-    log "  2. run your first command: yg cargo test"
+    if has_cmd aws; then
+        log "  1. configure AWS credentials: yg configure  (or: aws configure)"
+    else
+        log "  1. configure AWS credentials: yg configure"
+    fi
+    log "  2. run your first command:     yg echo 'hello world'"
     log ""
 
     # Check for rsync (non-blocking).

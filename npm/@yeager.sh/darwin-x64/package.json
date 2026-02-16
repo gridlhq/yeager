@@ -1,0 +1,12 @@
+{
+  "name": "@yeager.sh/darwin-x64",
+  "version": "0.1.0",
+  "description": "yeager binary for macOS x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gridlhq/yeager"
+  },
+  "os": ["darwin"],
+  "cpu": ["x64"]
+}

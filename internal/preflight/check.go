@@ -67,7 +67,7 @@ func CheckAWSCredentials(lookupEnv func(string) (string, bool), fileExists func(
 
 	r.OK = false
 	r.Message = "no AWS credentials found"
-	r.Fix = "run: aws configure (or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables)"
+	r.Fix = "run: yg configure (or: aws configure, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)"
 	return r
 }
 

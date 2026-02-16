@@ -8,8 +8,26 @@ import (
 	"syscall"
 
 	"github.com/gridlhq/yeager/internal/output"
+	"github.com/gridlhq/yeager/internal/provider"
 	"github.com/spf13/cobra"
 )
+
+// displayedError wraps an error that has already been printed to the user.
+// Execute() checks for this to avoid double-printing.
+type displayedError struct {
+	err error
+}
+
+func (e *displayedError) Error() string { return e.err.Error() }
+func (e *displayedError) Unwrap() error { return e.err }
+
+// displayed wraps an error to mark it as already shown to the user.
+func displayed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &displayedError{err: err}
+}
 
 // flags holds per-invocation flag state (no package globals).
 type flags struct {
@@ -51,6 +69,18 @@ func Execute(version string, args []string) int {
 		if errors.As(err, &ece) {
 			return ece.code
 		}
+
+		// If the error was already displayed inline, don't print again.
+		var de *displayedError
+		if !errors.As(err, &de) {
+			// Safety net: always print something so users never see silent failures.
+			w := output.New(output.ModeText)
+			if ce := provider.ClassifyAWSError(err); ce != nil {
+				w.Error(ce.Message, ce.Fix)
+			} else {
+				w.Error(err.Error(), "")
+			}
+		}
 		return 1
 	}
 	return 0
@@ -65,6 +95,7 @@ func newRootCmd(version string) *cobra.Command {
 		Long: `yeager runs commands on a remote Linux VM in your AWS account.
 Your laptop stays free for editing. The cloud does the compute.
 
+  yg configure        set up AWS credentials
   yg cargo test       run a command on the VM
   yg status           show VM state and active commands
   yg logs             replay + stream output from the last run
@@ -92,6 +123,7 @@ Your laptop stays free for editing. The cloud does the compute.
 	root.PersistentFlags().BoolVarP(&f.verbose, "verbose", "v", false, "enable debug logging")
 
 	root.AddCommand(
+		newConfigureCmd(f),
 		newStatusCmd(f),
 		newLogsCmd(f),
 		newKillCmd(f),

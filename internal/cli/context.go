@@ -85,7 +85,7 @@ func resolveCmdContext(ctx context.Context, mode output.Mode) (*cmdContext, erro
 	cfg, _, err := config.Load(cwd)
 	if err != nil {
 		w.Error("invalid configuration", "check .yeager.toml syntax, or delete it and run: yg init")
-		return nil, err
+		return nil, displayed(err)
 	}
 
 	// Preflight checks — detect missing prerequisites with actionable errors.
@@ -94,13 +94,13 @@ func resolveCmdContext(ctx context.Context, mode output.Mode) (*cmdContext, erro
 		for _, f := range failures {
 			w.Error(f.Message, f.Fix)
 		}
-		return nil, fmt.Errorf("preflight checks failed")
+		return nil, displayed(fmt.Errorf("preflight checks failed"))
 	}
 
 	prov, err := provider.NewAWSProvider(ctx, cfg.Compute.Region)
 	if err != nil {
 		printClassifiedError(w, err)
-		return nil, err
+		return nil, displayed(err)
 	}
 
 	store, err := state.NewStore("")

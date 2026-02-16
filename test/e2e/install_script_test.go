@@ -25,8 +25,8 @@ func TestE2E_InstallScriptPostInstallGuidance(t *testing.T) {
 
 	// Verify post-install guidance is present in the script.
 	assert.Contains(t, scriptText, "next steps:", "install script should include next steps")
-	assert.Contains(t, scriptText, "aws configure", "install script should mention aws configure")
-	assert.Contains(t, scriptText, "yg cargo test", "install script should show example command")
+	assert.Contains(t, scriptText, "yg configure", "install script should mention yg configure")
+	assert.Contains(t, scriptText, "yg echo", "install script should show example command")
 
 	// Verify rsync check is present.
 	assert.Contains(t, scriptText, "rsync not found", "install script should check for rsync")

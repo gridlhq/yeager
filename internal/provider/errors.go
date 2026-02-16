@@ -39,14 +39,14 @@ func ClassifyAWSError(err error) *ClassifiedError {
 	if containsAny(msg, "NoCredentialProviders", "no EC2 IMDS role found") {
 		return &ClassifiedError{
 			Message: "no AWS credentials found",
-			Fix:     "run: aws configure (or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)",
+			Fix:     "run: yg configure (or: aws configure, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)",
 			Cause:   err,
 		}
 	}
 	if containsAny(msg, "InvalidClientTokenId", "SignatureDoesNotMatch", "AuthFailure") {
 		return &ClassifiedError{
 			Message: "AWS credentials are invalid",
-			Fix:     "check your AWS credentials: aws sts get-caller-identity",
+			Fix:     "check your credentials: aws sts get-caller-identity (or re-run: yg configure)",
 			Cause:   err,
 		}
 	}

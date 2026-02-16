@@ -1,5 +1,5 @@
 {
-  "name": "yeager",
+  "name": "@yeager.sh/cli",
   "version": "0.1.0",
   "description": "Remote execution for local AI coding agents",
   "license": "MIT",
@@ -11,12 +11,12 @@
     "yg": "bin/yeager.js"
   },
   "optionalDependencies": {
-    "@yeager/darwin-arm64": "0.1.0",
-    "@yeager/darwin-x64": "0.1.0",
-    "@yeager/linux-arm64": "0.1.0",
-    "@yeager/linux-x64": "0.1.0",
-    "@yeager/win32-arm64": "0.1.0",
-    "@yeager/win32-x64": "0.1.0"
+    "@yeager.sh/darwin-arm64": "0.1.0",
+    "@yeager.sh/darwin-x64": "0.1.0",
+    "@yeager.sh/linux-arm64": "0.1.0",
+    "@yeager.sh/linux-x64": "0.1.0",
+    "@yeager.sh/win32-arm64": "0.1.0",
+    "@yeager.sh/win32-x64": "0.1.0"
   },
   "engines": {
     "node": ">=16"
