@@ -49,5 +49,5 @@ release:
     owner: gridlhq
     name: yeager
   draft: false
-  prerelease: auto
+  prerelease: false
   name_template: "v{{.Version}}"
