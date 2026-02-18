@@ -138,7 +138,7 @@ func Run(client *gossh.Client, opts RunOpts, stdout, stderr io.Writer) (*RunResu
 	// then does a final read to capture any remaining output.
 	tailCmd := fmt.Sprintf(
 		`for i in $(seq 1 50); do [ -f %s ] && break; sleep 0.1; done;`+
-			` tail -f %s --pid=$$ 2>/dev/null &`+
+			` tail -n +1 -f %s --pid=$$ 2>/dev/null &`+
 			` TAIL_PID=$!;`+
 			` while tmux has-session -t %s 2>/dev/null; do sleep 1; done;`+
 			` sleep 0.5;`+

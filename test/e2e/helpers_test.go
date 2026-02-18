@@ -286,3 +286,50 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:maxLen] + fmt.Sprintf("... (%d chars total)", len(s))
 }
+
+// runFKWithEnv executes yg with additional/overridden environment variables.
+// Returns combined stdout+stderr and any error.
+func runFKWithEnv(t *testing.T, dir string, timeout time.Duration, env map[string]string, args ...string) (string, error) {
+	t.Helper()
+	bin := fkBinary(t)
+
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+
+	// Start with current env, then apply overrides.
+	cmdEnv := os.Environ()
+	for k, v := range env {
+		cmdEnv = append(cmdEnv, k+"="+v)
+	}
+	cmdEnv = append(cmdEnv, "TERM=dumb")
+	cmd.Env = cmdEnv
+
+	done := make(chan struct{})
+	var output []byte
+	var cmdErr error
+
+	go func() {
+		output, cmdErr = cmd.CombinedOutput()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return string(output), cmdErr
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-done
+		return string(output), fmt.Errorf("yg %s timed out after %v", strings.Join(args, " "), timeout)
+	}
+}
+
+// requireContainsAny checks that output contains at least one of the substrings.
+func requireContainsAny(t *testing.T, output string, substrings ...string) {
+	t.Helper()
+	for _, s := range substrings {
+		if strings.Contains(output, s) {
+			return
+		}
+	}
+	t.Errorf("output contains none of %v:\n%s", substrings, truncate(output, 500))
+}

@@ -372,6 +372,46 @@ func TestEnsureBucket(t *testing.T) {
 		assert.Equal(t, s3types.BucketLocationConstraint("eu-west-1"), locationConstraint)
 	})
 
+	t.Run("succeeds when BucketAlreadyOwnedByYou", func(t *testing.T) {
+		t.Parallel()
+		s3Mock := &mockS3{
+			headBucketFn: func(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+				return nil, fmt.Errorf("NotFound")
+			},
+			createBucketFn: func(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
+				return nil, &s3types.BucketAlreadyOwnedByYou{Message: aws.String("bucket already owned by you")}
+			},
+			putBucketLifecycleConfigurationFn: func(ctx context.Context, params *s3.PutBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.PutBucketLifecycleConfigurationOutput, error) {
+				t.Fatal("should not set lifecycle when bucket already exists")
+				return nil, nil
+			},
+		}
+		p := newTestProvider(nil, s3Mock, stsWithAccount("123456789012"), nil)
+		err := p.EnsureBucket(context.Background())
+		require.NoError(t, err, "BucketAlreadyOwnedByYou should be treated as success")
+	})
+
+	t.Run("succeeds when BucketAlreadyOwnedByYou is wrapped", func(t *testing.T) {
+		t.Parallel()
+		s3Mock := &mockS3{
+			headBucketFn: func(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+				return nil, fmt.Errorf("NotFound")
+			},
+			createBucketFn: func(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
+				// AWS SDK often wraps errors. errors.As must unwrap to find the typed error.
+				inner := &s3types.BucketAlreadyOwnedByYou{Message: aws.String("already owned")}
+				return nil, fmt.Errorf("operation error S3: CreateBucket: %w", inner)
+			},
+			putBucketLifecycleConfigurationFn: func(ctx context.Context, params *s3.PutBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.PutBucketLifecycleConfigurationOutput, error) {
+				t.Fatal("should not set lifecycle when bucket already exists")
+				return nil, nil
+			},
+		}
+		p := newTestProvider(nil, s3Mock, stsWithAccount("123456789012"), nil)
+		err := p.EnsureBucket(context.Background())
+		require.NoError(t, err, "wrapped BucketAlreadyOwnedByYou should be unwrapped by errors.As")
+	})
+
 	t.Run("propagates CreateBucket error", func(t *testing.T) {
 		t.Parallel()
 		s3Mock := &mockS3{

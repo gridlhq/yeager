@@ -17,6 +17,9 @@ const Template = `# .yeager.toml
 # How long before the VM stops, gets terminated, and gets deleted.
 
 [lifecycle]
+# grace_period = "2m"         # wait this long after a command finishes
+                              # before auto-stopping the VM (keeps it
+                              # "warm" for quick follow-up commands)
 # idle_stop = "10m"           # stop VM after this much idle time
 # stopped_terminate = "7d"    # terminate stopped VM after this long
 # terminated_delete_ami = "30d"  # delete saved AMI snapshot after this long

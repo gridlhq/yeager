@@ -30,6 +30,9 @@ func RunStop(ctx context.Context, cc *cmdContext) error {
 	w := cc.Output
 	w.Infof("project: %s", cc.Project.DisplayName)
 
+	// Cancel any grace period monitor since user is explicitly stopping.
+	cancelGracePeriodMonitorBestEffort(cc)
+
 	vmState, err := cc.State.LoadVM(cc.Project.Hash)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -59,11 +62,13 @@ func RunStop(ctx context.Context, cc *cmdContext) error {
 		return nil
 	}
 
-	w.Infof("stopping VM %s...", info.InstanceID)
+	w.StartSpinner(fmt.Sprintf("stopping VM %s...", info.InstanceID))
 	if err := cc.Provider.StopVM(ctx, info.InstanceID); err != nil {
+		w.StopSpinner("failed to stop VM", false)
 		return err
 	}
 
-	w.Info("VM stopped — restart with: yg up")
+	w.StopSpinner("VM stopped", true)
+	w.Hint("restarts automatically on next yg command, or: yg up")
 	return nil
 }

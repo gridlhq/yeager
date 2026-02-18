@@ -47,6 +47,9 @@ type TailLogFunc func(client *gossh.Client, runID fkexec.RunID, stdout io.Writer
 // ReadRemoteFileFunc reads a file from the VM over SSH.
 type ReadRemoteFileFunc func(client *gossh.Client, remotePath string) ([]byte, error)
 
+// AWSCredStatusFunc checks AWS credential status and returns the account ID.
+type AWSCredStatusFunc func(ctx context.Context) (accountID string, err error)
+
 // cmdContext holds the resolved context for a CLI command.
 // Created once per command invocation, not shared between commands.
 type cmdContext struct {
@@ -57,15 +60,16 @@ type cmdContext struct {
 	Output   *output.Writer
 
 	// Factories for execution pipeline (set in resolveCmdContext, overridable in tests).
-	NewSSHConnector SSHConnectorFactory
-	ConnectSSH      SSHClientFactory
-	NewStorage      StorageFactory
-	RunSync         SyncFunc
-	RunExec         ExecFunc
-	ListRuns        ListRunsFunc
-	IsRunActive     IsRunActiveFunc
-	TailLog         TailLogFunc
-	ReadRemoteFile  ReadRemoteFileFunc
+	NewSSHConnector    SSHConnectorFactory
+	ConnectSSH         SSHClientFactory
+	NewStorage         StorageFactory
+	RunSync            SyncFunc
+	RunExec            ExecFunc
+	ListRuns           ListRunsFunc
+	IsRunActive        IsRunActiveFunc
+	TailLog            TailLogFunc
+	ReadRemoteFile     ReadRemoteFileFunc
+	CheckAWSCredStatus AWSCredStatusFunc
 }
 
 // resolveCmdContext builds the full context needed by VM-interacting commands.
@@ -99,7 +103,7 @@ func resolveCmdContext(ctx context.Context, mode output.Mode) (*cmdContext, erro
 
 	prov, err := provider.NewAWSProvider(ctx, cfg.Compute.Region)
 	if err != nil {
-		printClassifiedError(w, err)
+		printError(w, err)
 		return nil, displayed(err)
 	}
 
@@ -126,6 +130,9 @@ func resolveCmdContext(ctx context.Context, mode output.Mode) (*cmdContext, erro
 	cc.TailLog = fkexec.TailLog
 	cc.ReadRemoteFile = fkexec.ReadRemoteFile
 	cc.ConnectSSH = defaultConnectSSH(cc)
+	cc.CheckAWSCredStatus = func(ctx context.Context) (string, error) {
+		return prov.AccountID(ctx)
+	}
 
 	return cc, nil
 }
@@ -166,6 +173,14 @@ func printClassifiedError(w *output.Writer, err error) bool {
 		return true
 	}
 	return false
+}
+
+// printError prints a classified error if recognized, or the raw error otherwise.
+// Always prints something — never silent.
+func printError(w *output.Writer, err error) {
+	if !printClassifiedError(w, err) {
+		w.Error(err.Error(), "")
+	}
 }
 
 // defaultStorageFactory creates a storage store using the provider's S3 client.

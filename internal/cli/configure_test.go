@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -230,7 +232,7 @@ func TestDisplayedErrorDetection(t *testing.T) {
 
 	raw := assert.AnError
 	var de *displayedError
-	assert.False(t, false, "raw error should not be displayedError")
+	assert.False(t, errors.As(raw, &de), "raw error should not be displayedError")
 
 	wrapped := displayed(raw)
 	require.ErrorAs(t, wrapped, &de)
@@ -423,4 +425,155 @@ func TestIAMPolicyJSON(t *testing.T) {
 	assert.Contains(t, iamPolicyJSON, "ec2-instance-connect:SendSSHPublicKey")
 	assert.Contains(t, iamPolicyJSON, "sts:GetCallerIdentity")
 	assert.Contains(t, iamPolicyJSON, "arn:aws:s3:::yeager-*")
+}
+
+// ── Configure output tests (using injectable Output writer) ──
+
+func configureWriter(t *testing.T) (*output.Writer, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	w := output.NewWithWriters(&stdout, &stderr, output.ModeText)
+	return w, &stdout, &stderr
+}
+
+func TestConfigureOutput_FlagsHappyPath(t *testing.T) {
+	t.Parallel()
+	w, stdout, stderr := configureWriter(t)
+
+	err := RunConfigure(ConfigureOpts{
+		Mode:           output.ModeText,
+		AccessKeyID:    "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		Profile:        "default",
+		Stdin:          strings.NewReader(""),
+		HomeDir:        t.TempDir(),
+		ValidateCreds:  mockValidateCreds,
+		Output:         w,
+	})
+	require.NoError(t, err)
+
+	out := stdout.String()
+	// Spinner start falls back to Info (non-TTY).
+	assert.Contains(t, out, "validating credentials...", "should show spinner start message")
+	assert.Contains(t, out, "credentials valid", "should show spinner stop message")
+	assert.Contains(t, out, "done: credentials saved to", "should show success with done: prefix")
+	assert.Contains(t, out, "authenticated as account 123456789012", "should show account")
+	assert.Contains(t, out, "done: ready!", "should show final success")
+	assert.Contains(t, out, "→ try: yg echo 'hello world'", "should show hint")
+	assert.Empty(t, stderr.String(), "no errors expected")
+}
+
+func TestConfigureOutput_ExistingCredsValid(t *testing.T) {
+	t.Parallel()
+	w, stdout, stderr := configureWriter(t)
+
+	err := RunConfigure(ConfigureOpts{
+		Mode:    output.ModeText,
+		Profile: "default",
+		Stdin:   strings.NewReader(""),
+		HomeDir: t.TempDir(),
+		Output:  w,
+		CheckExisting: func() (string, error) {
+			return "123456789012", nil
+		},
+		CheckPerms: func(_, _ string) error {
+			return nil
+		},
+	})
+	require.NoError(t, err)
+
+	out := stdout.String()
+	assert.Contains(t, out, "checking for existing AWS credentials...", "should show credential check")
+	assert.Contains(t, out, "found existing AWS credentials (account 123456789012)", "should show found creds")
+	assert.Contains(t, out, "checking permissions...", "should show permission check")
+	assert.Contains(t, out, "permissions verified", "should confirm permissions")
+	assert.Contains(t, out, "done: ready!", "should show success")
+	assert.Contains(t, out, "→ try: yg echo 'hello world'", "should show hint")
+	assert.Contains(t, out, "→ to reconfigure:", "should show reconfigure hint")
+	assert.Empty(t, stderr.String(), "no errors expected")
+}
+
+func TestConfigureOutput_ExistingCredsBadPerms(t *testing.T) {
+	t.Parallel()
+	w, stdout, stderr := configureWriter(t)
+
+	err := RunConfigure(ConfigureOpts{
+		Mode:    output.ModeText,
+		Profile: "default",
+		Stdin:   strings.NewReader(""),
+		HomeDir: t.TempDir(),
+		Output:  w,
+		CheckExisting: func() (string, error) {
+			return "123456789012", nil
+		},
+		CheckPerms: func(_, _ string) error {
+			return fmt.Errorf("AccessDenied")
+		},
+	})
+	require.NoError(t, err)
+
+	out := stdout.String()
+	errOut := stderr.String()
+
+	// Spinner messages go to stdout (non-TTY fallback).
+	assert.Contains(t, out, "checking permissions...", "should show permission check on stdout")
+	assert.Contains(t, out, "missing permissions", "should show stop spinner message on stdout")
+	// Error goes to stderr (via w.Error).
+	assert.Contains(t, errOut, "error: missing EC2 permissions", "should show error on stderr")
+	assert.Contains(t, errOut, "attach the yeager IAM policy", "should show fix on stderr")
+	// Hints go to stdout.
+	assert.Contains(t, out, "→ IAM console:", "should show IAM console hint")
+	assert.Contains(t, out, "→ after attaching the policy", "should show next-step hint")
+}
+
+func TestConfigureOutput_InvalidCreds(t *testing.T) {
+	t.Parallel()
+	w, stdout, stderr := configureWriter(t)
+
+	err := RunConfigure(ConfigureOpts{
+		Mode:           output.ModeText,
+		AccessKeyID:    "AKIABADKEY",
+		SecretAccessKey: "badsecret",
+		Profile:        "default",
+		Stdin:          strings.NewReader(""),
+		HomeDir:        t.TempDir(),
+		Output:         w,
+		ValidateCreds: func(_, _ string) (string, error) {
+			return "", fmt.Errorf("InvalidClientTokenId")
+		},
+	})
+	require.Error(t, err)
+
+	out := stdout.String()
+	errOut := stderr.String()
+
+	assert.Contains(t, out, "validating credentials...", "should show spinner start")
+	assert.Contains(t, out, "invalid credentials", "should show spinner stop failure")
+	assert.Contains(t, errOut, "error: invalid credentials", "should show error on stderr")
+	assert.Contains(t, errOut, "check your access key ID", "should show fix on stderr")
+}
+
+func TestConfigureOutput_PermCheckWithNewCreds(t *testing.T) {
+	t.Parallel()
+	w, stdout, stderr := configureWriter(t)
+
+	err := RunConfigure(ConfigureOpts{
+		Mode:           output.ModeText,
+		AccessKeyID:    "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		Profile:        "default",
+		Stdin:          strings.NewReader(""),
+		HomeDir:        t.TempDir(),
+		Output:         w,
+		ValidateCreds:  mockValidateCreds,
+		CheckPerms: func(_, _ string) error {
+			return nil
+		},
+	})
+	require.NoError(t, err)
+
+	out := stdout.String()
+	assert.Contains(t, out, "checking permissions...", "should show permission check spinner")
+	assert.Contains(t, out, "permissions verified", "should show permission success")
+	assert.Empty(t, stderr.String(), "no errors expected")
 }

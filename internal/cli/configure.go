@@ -120,6 +120,7 @@ type ConfigureOpts struct {
 	Stdin           io.Reader
 	HomeDir         string                               // override for testing
 	ValidateCreds   func(string, string) (string, error) // override for testing
+	Output          *output.Writer                       // override for testing (nil = use output.New)
 
 	// Optional hooks — nil means skip that feature.
 	CheckExisting func() (string, error)     // check default AWS credential chain
@@ -130,30 +131,35 @@ type ConfigureOpts struct {
 
 // RunConfigure sets up AWS credentials for yeager.
 func RunConfigure(opts ConfigureOpts) error {
-	w := output.New(opts.Mode)
+	w := opts.Output
+	if w == nil {
+		w = output.New(opts.Mode)
+	}
 
 	accessKeyID := strings.TrimSpace(opts.AccessKeyID)
 	secretAccessKey := strings.TrimSpace(opts.SecretAccessKey)
 
 	// ── Phase 1: Check for existing credentials (when no flags provided) ──
 	if accessKeyID == "" && secretAccessKey == "" && opts.CheckExisting != nil {
-		w.Info("checking for existing AWS credentials...")
+		w.StartSpinner("checking for existing AWS credentials...")
 		accountID, err := opts.CheckExisting()
 		if err == nil {
-			w.Infof("found existing AWS credentials (account %s)", accountID)
+			w.StopSpinner(fmt.Sprintf("found existing AWS credentials (account %s)", accountID), true)
 			if opts.CheckPerms != nil {
-				w.Info("checking permissions...")
+				w.StartSpinner("checking permissions...")
 				if permErr := opts.CheckPerms("", ""); permErr != nil {
+					w.StopSpinner("missing permissions", false)
 					printPermWarning(w, opts)
 					return nil
 				}
+				w.StopSpinner("permissions verified", true)
 			}
-			w.Info("")
-			w.Info("ready! try: yg echo 'hello world'")
-			w.Info("")
-			w.Info("to reconfigure: yg configure --aws-access-key-id=AKIA... --aws-secret-access-key=...")
+			w.Success("ready!")
+			w.Hint("try: yg echo 'hello world'")
+			w.Hint("to reconfigure: yg configure --aws-access-key-id=AKIA... --aws-secret-access-key=...")
 			return nil
 		}
+		w.StopSpinner("no existing credentials found", false)
 		// No existing creds — continue to guided setup.
 	}
 
@@ -199,16 +205,18 @@ func RunConfigure(opts ConfigureOpts) error {
 	}
 
 	// ── Phase 3: Validate credentials ──
-	w.Info("validating credentials...")
+	w.StartSpinner("validating credentials...")
 	validate := opts.ValidateCreds
 	if validate == nil {
 		validate = validateAWSCredentials
 	}
 	accountID, err := validate(accessKeyID, secretAccessKey)
 	if err != nil {
+		w.StopSpinner("invalid credentials", false)
 		w.Error("invalid credentials", "check your access key ID and secret access key")
 		return displayed(err)
 	}
+	w.StopSpinner("credentials valid", true)
 
 	// ── Phase 4: Write credentials ──
 	homeDir := opts.HomeDir
@@ -224,20 +232,22 @@ func RunConfigure(opts ConfigureOpts) error {
 		return fmt.Errorf("writing credentials: %w", err)
 	}
 
-	w.Infof("credentials saved to %s [%s]", credPath, opts.Profile)
+	w.Success(fmt.Sprintf("credentials saved to %s [%s]", credPath, opts.Profile))
 	w.Infof("authenticated as account %s", accountID)
 
 	// ── Phase 5: Check permissions ──
 	if opts.CheckPerms != nil {
-		w.Info("checking permissions...")
+		w.StartSpinner("checking permissions...")
 		if err := opts.CheckPerms(accessKeyID, secretAccessKey); err != nil {
+			w.StopSpinner("missing permissions", false)
 			printPermWarning(w, opts)
 			return nil // creds saved, but permissions need fixing
 		}
+		w.StopSpinner("permissions verified", true)
 	}
 
-	w.Info("")
-	w.Info("ready! try: yg echo 'hello world'")
+	w.Success("ready!")
+	w.Hint("try: yg echo 'hello world'")
 	return nil
 }
 
@@ -259,15 +269,13 @@ func printSetupGuide(w *output.Writer) {
 // printPermWarning displays a warning when credentials are valid but lack required permissions.
 func printPermWarning(w *output.Writer, opts ConfigureOpts) {
 	w.Error("missing EC2 permissions", "attach the yeager IAM policy to your AWS user/role")
-	w.Info("")
-	w.Info("  IAM console: https://console.aws.amazon.com/iam/")
+	w.Hint("IAM console: https://console.aws.amazon.com/iam/")
 	if opts.CopyClipboard != nil {
 		if err := opts.CopyClipboard(iamPolicyJSON); err == nil {
-			w.Info("  IAM policy copied to clipboard — paste it as an inline policy")
+			w.Info("IAM policy copied to clipboard — paste it as an inline policy")
 		}
 	}
-	w.Info("")
-	w.Info("after attaching the policy, try: yg echo 'hello world'")
+	w.Hint("after attaching the policy, try: yg echo 'hello world'")
 }
 
 // copyPolicyAndOpenConsole copies the IAM policy to clipboard and opens the AWS console.
@@ -291,7 +299,7 @@ func checkExistingAWSCreds() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion("us-east-1"))
 	if err != nil {
 		return "", err
 	}
@@ -310,7 +318,9 @@ func checkAWSPermissions(accessKeyID, secretAccessKey string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	loadOpts := []func(*awsconfig.LoadOptions) error{}
+	loadOpts := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion("us-east-1"), // Use a default region for permission check
+	}
 	if accessKeyID != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, ""),
@@ -389,6 +399,7 @@ func validateAWSCredentials(accessKeyID, secretAccessKey string) (string, error)
 	defer cancel()
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion("us-east-1"), // STS is global, any region works
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			accessKeyID, secretAccessKey, "",
 		)),

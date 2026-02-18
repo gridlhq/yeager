@@ -9,6 +9,10 @@ import (
 	"github.com/gridlhq/yeager/internal/config"
 )
 
+// CloudInitVersion is incremented when cloud-init changes in a breaking way.
+// Used to detect outdated VMs that need recreation.
+const CloudInitVersion = 1
+
 // basePackages are always installed on every VM.
 var basePackages = []string{
 	"build-essential",
@@ -59,7 +63,7 @@ func GenerateCloudInit(langs []Language, setup config.SetupConfig) *CloudInit {
 	}
 
 	// 5. Create project directory for rsync target.
-	ci.runcmd = append(ci.runcmd, "mkdir -p /home/ubuntu/project")
+	ci.runcmd = append(ci.runcmd, "mkdir -p /home/ubuntu/project && chown ubuntu:ubuntu /home/ubuntu/project")
 
 	// NOTE: Dependency installs (DepInstall) and [setup] run commands are NOT
 	// included here. They require project files which aren't available until

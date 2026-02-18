@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"errors"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -19,7 +21,7 @@ import (
 
 const (
 	securityGroupName = "yeager-sg"
-	securityGroupDesc = "Yeager remote execution — SSH access"
+	securityGroupDesc = "Yeager remote execution - SSH access"
 	managedTagKey     = "yeager:managed"
 	managedTagValue   = "true"
 	projectHashTagKey = "yeager:project-hash"
@@ -245,7 +247,13 @@ func (p *AWSProvider) EnsureBucket(ctx context.Context) error {
 		}
 	}
 	if _, err := p.s3.CreateBucket(ctx, createInput); err != nil {
-		return fmt.Errorf("creating bucket %s: %w", bucket, err)
+		// Bucket may already exist in another region — treat as success.
+		var alreadyOwned *s3types.BucketAlreadyOwnedByYou
+		if !errors.As(err, &alreadyOwned) {
+			return fmt.Errorf("creating bucket %s: %w", bucket, err)
+		}
+		slog.Debug("bucket already exists (cross-region)", "bucket", bucket)
+		return nil
 	}
 
 	// Apply lifecycle policy: 30-day expiration + abort incomplete multipart uploads.
@@ -401,6 +409,7 @@ func (p *AWSProvider) toVMInfo(inst ec2types.Instance) VMInfo {
 	if inst.Placement != nil {
 		info.AvailabilityZone = aws.ToString(inst.Placement.AvailabilityZone)
 	}
+	info.InstanceType = string(inst.InstanceType)
 	return info
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gridlhq/yeager/internal/monitor"
 	"github.com/spf13/cobra"
 )
 
@@ -57,13 +58,21 @@ func RunDestroyWithOptions(ctx context.Context, cc *cmdContext, opts DestroyOpti
 	}
 
 	if !opts.Force {
-		w.Info("warning: destroying this VM will permanently delete:")
+		w.Warn("destroying this VM will permanently delete:", "")
 		w.Info("  - cached build artifacts")
 		w.Info("  - installed packages and toolchains")
 		w.Info("  - accumulated state from previous runs")
 		w.Info("")
-		w.Info("run again with --force to proceed")
+		w.Info("your run history and logs in S3 are not affected.")
+		w.Hint("run again with --force to proceed")
 		return nil
+	}
+
+	// Stop any running monitor daemon before destroying.
+	m := monitor.New(cc.Project.Hash, cc.State, cc.Provider, 0) // grace period doesn't matter for Stop
+	if err := m.Stop(); err != nil {
+		// Log but don't fail - we still want to destroy even if monitor cleanup fails.
+		w.Warn(fmt.Sprintf("failed to stop monitor daemon: %v", err), "")
 	}
 
 	// Try to terminate in AWS (best-effort — might already be gone).
@@ -73,10 +82,12 @@ func RunDestroyWithOptions(ctx context.Context, cc *cmdContext, opts DestroyOpti
 	}
 
 	if info != nil {
-		w.Infof("terminating VM %s...", info.InstanceID)
+		w.StartSpinner(fmt.Sprintf("terminating VM %s...", info.InstanceID))
 		if err := cc.Provider.TerminateVM(ctx, info.InstanceID); err != nil {
+			w.StopSpinner("failed to terminate VM", false)
 			return err
 		}
+		w.StopSpinner(fmt.Sprintf("terminated VM %s", info.InstanceID), true)
 	} else {
 		w.Infof("VM %s no longer exists in AWS", vmState.InstanceID)
 	}
@@ -86,6 +97,6 @@ func RunDestroyWithOptions(ctx context.Context, cc *cmdContext, opts DestroyOpti
 		return fmt.Errorf("cleaning up local state: %w", err)
 	}
 
-	w.Info("VM destroyed and local state cleaned up")
+	w.Success("VM destroyed and local state cleaned up")
 	return nil
 }

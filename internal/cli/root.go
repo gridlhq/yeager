@@ -75,7 +75,12 @@ func Execute(version string, args []string) int {
 		if !errors.As(err, &de) {
 			// Safety net: always print something so users never see silent failures.
 			w := output.New(output.ModeText)
-			if ce := provider.ClassifyAWSError(err); ce != nil {
+
+			// Improve error message for flag parsing conflicts.
+			if strings.Contains(err.Error(), "unknown shorthand flag") || strings.Contains(err.Error(), "unknown flag") {
+				w.Error(err.Error(), "")
+				w.Hint("use -- to pass flags to the remote command: yg -- ls -al")
+			} else if ce := provider.ClassifyAWSError(err); ce != nil {
 				w.Error(ce.Message, ce.Fix)
 			} else {
 				w.Error(err.Error(), "")
@@ -93,23 +98,20 @@ func newRootCmd(version string) *cobra.Command {
 		Use:   "yg <command> [args...]",
 		Short: "Remote execution for local AI coding agents",
 		Long: `yeager runs commands on a remote Linux VM in your AWS account.
-Your laptop stays free for editing. The cloud does the compute.
-
-  yg configure        set up AWS credentials
-  yg cargo test       run a command on the VM
-  yg status           show VM state and active commands
-  yg logs             replay + stream output from the last run
-  yg stop             stop the VM (fast restart later)
-  yg destroy          terminate the VM and clean up
-  yg init             create a .yeager.toml with defaults`,
-		Example: `  yg cargo test          # run Rust tests
+Your laptop stays free for editing. The cloud does the compute.`,
+		Example: `  yg echo 'hello world'  # verify setup — run your first command
+  yg cargo test          # run Rust tests
   yg npm run build       # build a Node.js project
   yg go test ./...       # run Go tests
   yg pytest              # run Python tests
-  yg make build          # run make targets`,
+  yg make build          # run make targets
+  yg -- ls -al           # use -- to pass flags to remote command`,
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Allow arbitrary args so unrecognized commands (e.g. "yg echo hi")
+		// fall through to RunE instead of erroring as "unknown command".
+		Args: cobra.ArbitraryArgs,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			output.SetupSlog(f.verbose)
 		},
@@ -118,20 +120,26 @@ Your laptop stays free for editing. The cloud does the compute.
 		},
 	}
 
-	root.PersistentFlags().BoolVar(&f.json, "json", false, "output in JSON format")
-	root.PersistentFlags().BoolVar(&f.quiet, "quiet", false, "suppress yeager messages, show only command output")
+	root.PersistentFlags().BoolVarP(&f.json, "json", "j", false, "output in JSON format")
+	root.PersistentFlags().BoolVarP(&f.quiet, "quiet", "q", false, "suppress yeager messages, show only command output")
 	root.PersistentFlags().BoolVarP(&f.verbose, "verbose", "v", false, "enable debug logging")
 
 	root.AddCommand(
-		newConfigureCmd(f),
+		// Daily-use commands (ordered by frequency).
 		newStatusCmd(f),
 		newLogsCmd(f),
 		newKillCmd(f),
 		newStopCmd(f),
-		newDestroyCmd(f),
-		newInitCmd(f),
 		newUpCmd(f),
+		newDestroyCmd(f),
+		// Setup commands (typically run once).
+		newConfigureCmd(f),
+		newInitCmd(f),
+		// Hidden internal commands.
+		newMonitorDaemonCmd(),
 	)
+
+	root.SetHelpFunc(renderHelp)
 
 	return root
 }
@@ -140,6 +148,14 @@ Your laptop stays free for editing. The cloud does the compute.
 func runRemoteCommand(cmd *cobra.Command, args []string, f *flags) error {
 	if len(args) == 0 {
 		return cmd.Help()
+	}
+
+	// Handle -- separator: everything after -- is passed verbatim to remote command.
+	// This allows: yg -- ls -al (where -al won't be parsed as yeager flags).
+	argsBeforeDash := cmd.ArgsLenAtDash()
+	if argsBeforeDash >= 0 {
+		// There was a -- separator. Use only args after it.
+		args = cmd.Flags().Args()
 	}
 
 	command := strings.Join(args, " ")

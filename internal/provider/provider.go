@@ -9,6 +9,7 @@ type VMInfo struct {
 	PublicIP         string
 	Region           string
 	AvailabilityZone string
+	InstanceType     string // e.g. "t4g.medium"
 }
 
 // CloudProvider defines the interface for cloud infrastructure operations.

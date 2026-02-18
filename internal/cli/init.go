@@ -37,7 +37,11 @@ to customize settings before your first run.`,
 
 // RunInit creates a .yeager.toml in the given directory.
 func RunInit(dir string, force bool, mode output.Mode) error {
-	w := output.New(mode)
+	return RunInitWithWriter(dir, force, output.New(mode))
+}
+
+// RunInitWithWriter creates a .yeager.toml using the given output writer (for testing).
+func RunInitWithWriter(dir string, force bool, w *output.Writer) error {
 	target := filepath.Join(dir, config.FileName)
 
 	if !force {
@@ -54,6 +58,8 @@ func RunInit(dir string, force bool, mode output.Mode) error {
 		return fmt.Errorf("writing %s: %w", config.FileName, err)
 	}
 
-	w.Infof("created %s", config.FileName)
+	w.Success(fmt.Sprintf("created %s", config.FileName))
+	w.Hint("edit to customize VM size, region, and more")
+	w.Hint("next: yg <command>")
 	return nil
 }

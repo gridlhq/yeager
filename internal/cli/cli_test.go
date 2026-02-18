@@ -63,7 +63,44 @@ func TestRunWithNoArgs(t *testing.T) {
 	root.SetArgs([]string{})
 	err := root.Execute()
 	require.NoError(t, err)
-	assert.Contains(t, buf.String(), "remote Linux VM")
+	assert.Contains(t, buf.String(), "remote execution")
+}
+
+func TestArbitraryCommandNotRejected(t *testing.T) {
+	t.Parallel()
+
+	// "yg echo hi" must NOT fail with "unknown command".
+	// It will fail later (no AWS context, etc.) but cobra must route it
+	// to the root RunE, not reject it as an unknown subcommand.
+	root := newRootCmd("test")
+	root.SetArgs([]string{"echo", "hi"})
+	err := root.Execute()
+
+	// We expect an error (no project/AWS context in tests), but it must NOT
+	// be the cobra "unknown command" error.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "unknown command",
+			"arbitrary commands must route to RunE, not be rejected by cobra")
+	}
+}
+
+func TestDoubleDashSeparator(t *testing.T) {
+	t.Parallel()
+
+	// Test that -- separator allows flags to pass through to remote command.
+	// "yg -- ls -al" should pass "-al" to the remote command, not parse it as yeager flags.
+	root := newRootCmd("test")
+	root.SetArgs([]string{"--", "ls", "-al"})
+	err := root.Execute()
+
+	// We expect an error (no project/AWS context in tests), but it must NOT
+	// be a flag parsing error.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "unknown shorthand flag",
+			"-- separator must prevent flag parsing errors")
+		assert.NotContains(t, err.Error(), "unknown flag",
+			"-- separator must prevent flag parsing errors")
+	}
 }
 
 func TestRootHelpContainsExamples(t *testing.T) {
@@ -200,4 +237,40 @@ func TestInitGeneratedFileIsValidConfig(t *testing.T) {
 	assert.Equal(t, filepath.Join(dir, config.FileName), configPath)
 	assert.Equal(t, "medium", cfg.Compute.Size)
 	assert.Equal(t, "us-east-1", cfg.Compute.Region)
+}
+
+// ── Init output tests (using RunInitWithWriter for captured output) ──
+
+func TestInitOutput_Success(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	w := output.NewWithWriters(&stdout, &stderr, output.ModeText)
+
+	err := RunInitWithWriter(dir, false, w)
+	require.NoError(t, err)
+
+	out := stdout.String()
+	assert.Contains(t, out, "done: created .yeager.toml", "should show success message")
+	assert.Contains(t, out, "→ edit to customize", "should show edit hint")
+	assert.Contains(t, out, "→ next: yg <command>", "should show next-step hint")
+	assert.Empty(t, stderr.String(), "no errors expected")
+}
+
+func TestInitOutput_AlreadyExists(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte("existing"), 0o644))
+
+	var stdout, stderr bytes.Buffer
+	w := output.NewWithWriters(&stdout, &stderr, output.ModeText)
+
+	err := RunInitWithWriter(dir, false, w)
+	require.Error(t, err)
+
+	assert.Contains(t, stderr.String(), "error: .yeager.toml already exists", "should show error on stderr")
+	assert.Contains(t, stderr.String(), "use --force to overwrite", "should show fix on stderr")
+	assert.Empty(t, stdout.String(), "no stdout expected on error")
 }

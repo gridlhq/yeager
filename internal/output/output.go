@@ -7,21 +7,29 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/briandowns/spinner"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
-	prefix    = "yeager | "
-	separator = "─────────────────────────────────────────────"
+	plainPrefix = "yeager | "
+	separator    = "─────────────────────────────────────────────"
 )
 
-// ANSI color codes.
-const (
-	ansiReset = "\033[0m"
-	ansiBold  = "\033[1m"
-	ansiDim   = "\033[2m"
-	ansiRed   = "\033[31m"
-	ansiCyan  = "\033[36m"
+// Lipgloss styles for terminal output.
+var (
+	BrandStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)  // cyan bold
+	DimStyle     = lipgloss.NewStyle().Faint(true)
+	ErrorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)  // red bold
+	SuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))             // green
+	WarnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))             // yellow
+	BoldStyle    = lipgloss.NewStyle().Bold(true)
+	CyanStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))             // cyan
+	GreenStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	YellowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 )
 
 // Mode controls output format.
@@ -41,6 +49,9 @@ type Writer struct {
 	now      func() time.Time // injectable clock for testing
 	colorOut bool             // whether stdout supports color
 	colorErr bool             // whether stderr supports color
+
+	mu   sync.Mutex
+	spin *spinner.Spinner // active spinner (nil when none)
 }
 
 // New creates a Writer with the given mode, writing to stdout/stderr.
@@ -74,12 +85,32 @@ func (w *Writer) SetClock(fn func() time.Time) {
 	w.now = fn
 }
 
-// colorPrefix returns the "yeager | " prefix, colorized if supported.
-func colorPrefix(color bool) string {
-	if color {
-		return ansiCyan + "yeager" + ansiReset + " " + ansiDim + "|" + ansiReset + " "
+// Mode returns the current output mode.
+func (w *Writer) Mode() Mode {
+	return w.mode
+}
+
+// ColorOut returns whether stdout supports color.
+func (w *Writer) ColorOut() bool {
+	return w.colorOut
+}
+
+// WriteJSON marshals v as a single JSON object and writes it to stdout.
+func (w *Writer) WriteJSON(v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshaling JSON: %w", err)
 	}
-	return prefix
+	fmt.Fprintln(w.out, string(data))
+	return nil
+}
+
+// prefix returns the branded prefix for the given color capability.
+func prefix(color bool) string {
+	if color {
+		return "🛩️ " + BrandStyle.Render("yeager") + " " + DimStyle.Render("·") + " "
+	}
+	return plainPrefix
 }
 
 // Info prints a yeager-prefixed informational message.
@@ -90,7 +121,9 @@ func (w *Writer) Info(msg string) {
 	case ModeQuiet:
 		// suppress
 	default:
-		fmt.Fprintf(w.out, "%s%s\n", colorPrefix(w.colorOut), msg)
+		w.pauseSpinner()
+		fmt.Fprintf(w.out, "%s%s\n", prefix(w.colorOut), msg)
+		w.resumeSpinner()
 	}
 }
 
@@ -99,23 +132,92 @@ func (w *Writer) Infof(format string, args ...any) {
 	w.Info(fmt.Sprintf(format, args...))
 }
 
+// Success prints a yeager-prefixed success message with a green checkmark.
+func (w *Writer) Success(msg string) {
+	switch w.mode {
+	case ModeJSON:
+		w.writeJSON("info", msg)
+	case ModeQuiet:
+		// suppress
+	default:
+		w.pauseSpinner()
+		if w.colorOut {
+			fmt.Fprintf(w.out, "🛩️ %s %s %s\n",
+				BrandStyle.Render("yeager"),
+				SuccessStyle.Render("✓"),
+				msg)
+		} else {
+			fmt.Fprintf(w.out, "yeager | done: %s\n", msg)
+		}
+		w.resumeSpinner()
+	}
+}
+
+// Warn prints a yeager-prefixed warning message with a yellow warning symbol.
+func (w *Writer) Warn(msg, fix string) {
+	switch w.mode {
+	case ModeJSON:
+		w.writeJSONError(msg, fix)
+	default:
+		w.pauseSpinner()
+		if w.colorErr {
+			fmt.Fprintf(w.err, "🛩️ %s %s %s\n",
+				BrandStyle.Render("yeager"),
+				WarnStyle.Render("⚠"),
+				msg)
+			if fix != "" {
+				fmt.Fprintf(w.err, "%s%s\n", prefix(true), DimStyle.Render(fix))
+			}
+		} else {
+			fmt.Fprintf(w.err, "yeager | warning: %s\n", msg)
+			if fix != "" {
+				fmt.Fprintf(w.err, "%s%s\n", plainPrefix, fix)
+			}
+		}
+		w.resumeSpinner()
+	}
+}
+
+// Hint prints a dimmed hint message with an arrow prefix.
+func (w *Writer) Hint(msg string) {
+	switch w.mode {
+	case ModeJSON:
+		w.writeJSON("info", msg)
+	case ModeQuiet:
+		// suppress
+	default:
+		w.pauseSpinner()
+		if w.colorOut {
+			fmt.Fprintf(w.out, "%s%s %s\n", prefix(true), DimStyle.Render("→"), DimStyle.Render(msg))
+		} else {
+			fmt.Fprintf(w.out, "%s→ %s\n", plainPrefix, msg)
+		}
+		w.resumeSpinner()
+	}
+}
+
 // Error prints a yeager-prefixed error message with an optional fix suggestion.
 func (w *Writer) Error(msg, fix string) {
 	switch w.mode {
 	case ModeJSON:
 		w.writeJSONError(msg, fix)
 	default:
+		w.pauseSpinner()
 		if w.colorErr {
-			fmt.Fprintf(w.err, "%s%serror:%s %s\n", colorPrefix(true), ansiBold+ansiRed, ansiReset, msg)
+			fmt.Fprintf(w.err, "🛩️ %s %s %s\n",
+				BrandStyle.Render("yeager"),
+				ErrorStyle.Render("✗"),
+				msg)
 			if fix != "" {
-				fmt.Fprintf(w.err, "%s%s%s\n", colorPrefix(true), ansiDim+fix, ansiReset)
+				fmt.Fprintf(w.err, "%s%s\n", prefix(true), DimStyle.Render(fix))
 			}
 		} else {
-			fmt.Fprintf(w.err, "%serror: %s\n", prefix, msg)
+			fmt.Fprintf(w.err, "%serror: %s\n", plainPrefix, msg)
 			if fix != "" {
-				fmt.Fprintf(w.err, "%s%s\n", prefix, fix)
+				fmt.Fprintf(w.err, "%s%s\n", plainPrefix, fix)
 			}
 		}
+		w.resumeSpinner()
 	}
 }
 
@@ -127,11 +229,13 @@ func (w *Writer) Separator() {
 	case ModeQuiet:
 		// suppress
 	default:
+		w.pauseSpinner()
 		if w.colorOut {
-			fmt.Fprintf(w.out, "%s%s%s%s\n", colorPrefix(true), ansiDim, separator, ansiReset)
+			fmt.Fprintf(w.out, "%s%s\n", prefix(true), DimStyle.Render(separator))
 		} else {
-			fmt.Fprintf(w.out, "%s%s\n", prefix, separator)
+			fmt.Fprintf(w.out, "%s%s\n", plainPrefix, separator)
 		}
+		w.resumeSpinner()
 	}
 }
 
@@ -141,7 +245,9 @@ func (w *Writer) Stream(data []byte) {
 	case ModeJSON:
 		w.writeJSON("output", string(data))
 	default:
+		w.pauseSpinner()
 		w.out.Write(data) //nolint:errcheck // output writer errors are not actionable
+		w.resumeSpinner()
 	}
 }
 
@@ -151,9 +257,106 @@ func (w *Writer) StreamLine(line string) {
 	case ModeJSON:
 		w.writeJSON("output", line)
 	default:
+		w.pauseSpinner()
 		fmt.Fprintln(w.out, line)
+		w.resumeSpinner()
 	}
 }
+
+// ── Spinner ──────────────────────────────────────────────────────
+
+// StartSpinner starts an animated spinner with the given message.
+// In non-TTY/JSON/quiet modes, falls back to a regular Info message.
+func (w *Writer) StartSpinner(msg string) {
+	if w.mode != ModeText || !w.colorErr {
+		// Non-TTY fallback: just print as info.
+		w.Info(msg)
+		return
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Stop any existing spinner first.
+	if w.spin != nil {
+		w.spin.Stop()
+	}
+
+	s := spinner.New(spinner.CharSets[14], 80*time.Millisecond, spinner.WithWriter(w.err))
+	s.Prefix = "🛩️ " + BrandStyle.Render("yeager") + " "
+	s.Suffix = " " + msg
+	s.Start()
+	w.spin = s
+}
+
+// UpdateSpinner updates the spinner's message text.
+// No-op if no spinner is active.
+func (w *Writer) UpdateSpinner(msg string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.spin != nil {
+		w.spin.Suffix = " " + msg
+	}
+}
+
+// StopSpinner stops the spinner and prints a final status message.
+// If success is true, prints with a green ✓; otherwise red ✗.
+func (w *Writer) StopSpinner(msg string, success bool) {
+	w.mu.Lock()
+	s := w.spin
+	w.spin = nil
+	w.mu.Unlock()
+
+	if s != nil {
+		s.FinalMSG = "" // we'll print our own final message
+		s.Stop()
+	}
+
+	if w.mode == ModeJSON {
+		w.writeJSON("info", msg)
+		return
+	}
+	if w.mode == ModeQuiet {
+		return
+	}
+
+	if !w.colorErr {
+		// Non-TTY fallback.
+		fmt.Fprintf(w.out, "%s%s\n", plainPrefix, msg)
+		return
+	}
+
+	sym := SuccessStyle.Render("✓")
+	if !success {
+		sym = ErrorStyle.Render("✗")
+	}
+	fmt.Fprintf(w.err, "🛩️ %s %s %s\n",
+		BrandStyle.Render("yeager"),
+		sym,
+		msg)
+}
+
+// pauseSpinner temporarily stops the spinner so other output can be printed
+// without visual corruption. Call resumeSpinner() after printing.
+func (w *Writer) pauseSpinner() {
+	w.mu.Lock()
+	if w.spin != nil && w.spin.Active() {
+		w.spin.Stop()
+	}
+	w.mu.Unlock()
+}
+
+// resumeSpinner restarts a paused spinner.
+func (w *Writer) resumeSpinner() {
+	w.mu.Lock()
+	if w.spin != nil {
+		w.spin.Start()
+	}
+	w.mu.Unlock()
+}
+
+// ── JSON output ──────────────────────────────────────────────────
 
 func (w *Writer) writeJSON(msgType, msg string) {
 	msg = strings.TrimRight(msg, "\n")
@@ -188,6 +391,8 @@ func (w *Writer) writeJSONError(msg, fix string) {
 	fmt.Fprintln(w.out, string(data))
 }
 
+// ── Utilities ────────────────────────────────────────────────────
+
 // isTerminal checks if w is a terminal file descriptor.
 func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
@@ -205,6 +410,11 @@ func isTerminal(w io.Writer) bool {
 func noColor() bool {
 	_, ok := os.LookupEnv("NO_COLOR")
 	return ok
+}
+
+// SupportsColor returns true if the given writer is a color-capable terminal.
+func SupportsColor(w io.Writer) bool {
+	return !noColor() && isTerminal(w)
 }
 
 // SetupSlog configures slog for the given verbosity level.

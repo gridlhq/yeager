@@ -83,6 +83,42 @@ func ClassifyAWSError(err error) *ClassifiedError {
 		}
 	}
 
+	// Throttling errors.
+	if containsAny(msg, "RequestLimitExceeded", "Throttling", "TooManyRequestsException") {
+		return &ClassifiedError{
+			Message: "AWS request rate limit exceeded",
+			Fix:     "wait a moment and try again",
+			Cause:   err,
+		}
+	}
+
+	// AMI errors.
+	if containsAny(msg, "InvalidAMIID", "AMINotFound") {
+		return &ClassifiedError{
+			Message: "AMI not found in this region",
+			Fix:     "try a different region (compute.region in .yeager.toml)",
+			Cause:   err,
+		}
+	}
+
+	// VPC/subnet/security-group errors.
+	if containsAny(msg, "InvalidSubnetID", "InvalidVpcID", "SubnetNotFound", "InvalidGroup") {
+		return &ClassifiedError{
+			Message: "VPC or subnet configuration error",
+			Fix:     "ensure a default VPC exists in the target region, or check your AWS account settings",
+			Cause:   err,
+		}
+	}
+
+	// Region/opt-in errors.
+	if containsAny(msg, "OptInRequired", "AuthorizationError") {
+		return &ClassifiedError{
+			Message: "AWS region not enabled",
+			Fix:     "enable the region in your AWS account settings, or use a different region (compute.region in .yeager.toml)",
+			Cause:   err,
+		}
+	}
+
 	return nil
 }
 

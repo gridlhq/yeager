@@ -124,6 +124,36 @@ func TestClassifyAWSError(t *testing.T) {
 			wantMessage: "cannot reach AWS",
 			wantFix:     "internet connection",
 		},
+		{
+			name:        "throttling - RequestLimitExceeded",
+			err:         fmt.Errorf("RequestLimitExceeded: Rate exceeded"),
+			wantMessage: "request rate limit",
+			wantFix:     "wait a moment",
+		},
+		{
+			name:        "throttling - Throttling",
+			err:         fmt.Errorf("Throttling: Rate exceeded"),
+			wantMessage: "request rate limit",
+			wantFix:     "wait a moment",
+		},
+		{
+			name:        "AMI not found",
+			err:         fmt.Errorf("InvalidAMIID.NotFound: The image id 'ami-xxx' does not exist"),
+			wantMessage: "AMI not found",
+			wantFix:     "different region",
+		},
+		{
+			name:        "invalid subnet",
+			err:         fmt.Errorf("InvalidSubnetID.NotFound: subnet-xxxx does not exist"),
+			wantMessage: "VPC or subnet",
+			wantFix:     "default VPC",
+		},
+		{
+			name:        "opt in required",
+			err:         fmt.Errorf("OptInRequired: region is not enabled"),
+			wantMessage: "region not enabled",
+			wantFix:     "enable the region",
+		},
 	}
 
 	for _, tt := range tests {

@@ -10,19 +10,21 @@ import (
 )
 
 const (
-	stateDir    = "yeager"
-	stateFile   = "vm.json"
-	historyFile = "history.json"
-	maxHistory  = 20
+	stateDir      = "yeager"
+	stateFile     = "vm.json"
+	historyFile   = "history.json"
+	idleStartFile = "idle_start"
+	maxHistory    = 20
 )
 
 // VMState represents the persisted state for a project's VM.
 type VMState struct {
-	InstanceID string    `json:"instance_id"`
-	Region     string    `json:"region"`
-	Created    time.Time `json:"created"`
-	ProjectDir string    `json:"project_dir"`
-	SetupHash  string    `json:"setup_hash,omitempty"`
+	InstanceID        string    `json:"instance_id"`
+	Region            string    `json:"region"`
+	Created           time.Time `json:"created"`
+	ProjectDir        string    `json:"project_dir"`
+	SetupHash         string    `json:"setup_hash,omitempty"`
+	CloudInitVersion  int       `json:"cloud_init_version,omitempty"`
 }
 
 // Store manages yeager state on the local filesystem.
@@ -196,4 +198,54 @@ func (s *Store) LoadRunHistory(projectHash string) ([]RunHistoryEntry, error) {
 // BaseDir returns the store's base directory.
 func (s *Store) BaseDir() string {
 	return s.baseDir
+}
+
+// SaveIdleStart records when the VM became idle (for grace period tracking).
+// Uses atomic write (temp + rename).
+func (s *Store) SaveIdleStart(projectHash string, t time.Time) error {
+	dir := s.projectDir(projectHash)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating state directory: %w", err)
+	}
+
+	target := filepath.Join(dir, idleStartFile)
+	tmp := target + ".tmp"
+
+	data := []byte(t.UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("writing temp idle_start file: %w", err)
+	}
+
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp) //nolint:errcheck // best-effort cleanup
+		return fmt.Errorf("renaming idle_start file: %w", err)
+	}
+
+	return nil
+}
+
+// LoadIdleStart reads when the VM became idle.
+// Returns os.ErrNotExist if no idle start time exists.
+func (s *Store) LoadIdleStart(projectHash string) (time.Time, error) {
+	target := filepath.Join(s.projectDir(projectHash), idleStartFile)
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing idle_start time: %w", err)
+	}
+
+	return t, nil
+}
+
+// ClearIdleStart removes the idle start time (when VM becomes active again).
+func (s *Store) ClearIdleStart(projectHash string) error {
+	target := filepath.Join(s.projectDir(projectHash), idleStartFile)
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing idle_start file: %w", err)
+	}
+	return nil
 }

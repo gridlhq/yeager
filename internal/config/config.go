@@ -34,6 +34,7 @@ type ComputeConfig struct {
 // LifecycleConfig controls VM lifecycle timers.
 // Duration fields are stored as strings (e.g. "10m", "7d") for Viper compatibility.
 type LifecycleConfig struct {
+	GracePeriod         string `mapstructure:"grace_period"`
 	IdleStop            string `mapstructure:"idle_stop"`
 	StoppedTerminate    string `mapstructure:"stopped_terminate"`
 	TerminatedDeleteAMI string `mapstructure:"terminated_delete_ami"`
@@ -73,6 +74,11 @@ func ParseDuration(s string) (time.Duration, error) {
 	return d, nil
 }
 
+// GracePeriodDuration returns the parsed grace_period duration.
+func (lc *LifecycleConfig) GracePeriodDuration() (time.Duration, error) {
+	return ParseDuration(lc.GracePeriod)
+}
+
 // IdleStopDuration returns the parsed idle_stop duration.
 func (lc *LifecycleConfig) IdleStopDuration() (time.Duration, error) {
 	return ParseDuration(lc.IdleStop)
@@ -96,6 +102,7 @@ func Defaults() Config {
 			Region: "us-east-1",
 		},
 		Lifecycle: LifecycleConfig{
+			GracePeriod:         "2m",
 			IdleStop:            "10m",
 			StoppedTerminate:    "7d",
 			TerminatedDeleteAMI: "30d",
@@ -115,6 +122,11 @@ var ValidSizes = map[string]bool{
 func (c *Config) Validate() error {
 	if c.Compute.Size != "" && !ValidSizes[c.Compute.Size] {
 		return fmt.Errorf("invalid compute.size %q (must be small, medium, large, or xlarge)", c.Compute.Size)
+	}
+	if c.Lifecycle.GracePeriod != "" {
+		if _, err := ParseDuration(c.Lifecycle.GracePeriod); err != nil {
+			return fmt.Errorf("invalid lifecycle.grace_period: %w", err)
+		}
 	}
 	if c.Lifecycle.IdleStop != "" {
 		if _, err := ParseDuration(c.Lifecycle.IdleStop); err != nil {
@@ -190,6 +202,7 @@ func FindConfig(startDir string) string {
 func setViperDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("compute.size", cfg.Compute.Size)
 	v.SetDefault("compute.region", cfg.Compute.Region)
+	v.SetDefault("lifecycle.grace_period", cfg.Lifecycle.GracePeriod)
 	v.SetDefault("lifecycle.idle_stop", cfg.Lifecycle.IdleStop)
 	v.SetDefault("lifecycle.stopped_terminate", cfg.Lifecycle.StoppedTerminate)
 	v.SetDefault("lifecycle.terminated_delete_ami", cfg.Lifecycle.TerminatedDeleteAMI)

@@ -91,3 +91,38 @@ func TestE2E_SmokeInstallScript(t *testing.T) {
 	out := string(versionOutput)
 	assert.Contains(t, out, "yg", "expected version output from installed binary")
 }
+
+// TestE2E_DoubleDashSeparator verifies that the -- separator works for passing flags.
+func TestE2E_DoubleDashSeparator(t *testing.T) {
+	bin := fkBinary(t)
+
+	// Test that "yg -- echo -n test" passes -n to echo command.
+	// Without --, the -n would be parsed as a yeager flag and fail.
+	cmd := exec.Command(bin, "--", "echo", "-n", "test")
+	output, err := cmd.CombinedOutput()
+
+	// This will fail because we don't have AWS configured, but the error
+	// should NOT be about flag parsing.
+	if err != nil {
+		out := string(output)
+		assert.NotContains(t, out, "unknown shorthand flag",
+			"-- separator must prevent flag parsing errors")
+		assert.NotContains(t, out, "unknown flag",
+			"-- separator must prevent flag parsing errors")
+	}
+}
+
+// TestE2E_HelpShowsDoubleDash verifies help text documents the -- separator.
+func TestE2E_HelpShowsDoubleDash(t *testing.T) {
+	bin := fkBinary(t)
+
+	// Check --help output for the -- separator in examples.
+	cmd := exec.Command(bin, "--help")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "yg --help failed: %s", output)
+
+	out := string(output)
+	// The -- example is in the Examples section.
+	assert.Contains(t, out, "# use -- to pass flags to remote command",
+		"--help should show -- separator in examples")
+}

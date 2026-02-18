@@ -16,6 +16,7 @@ func TestDefaults(t *testing.T) {
 	cfg := Defaults()
 	assert.Equal(t, "medium", cfg.Compute.Size)
 	assert.Equal(t, "us-east-1", cfg.Compute.Region)
+	assert.Equal(t, "2m", cfg.Lifecycle.GracePeriod)
 	assert.Equal(t, "10m", cfg.Lifecycle.IdleStop)
 	assert.Equal(t, "7d", cfg.Lifecycle.StoppedTerminate)
 	assert.Equal(t, "30d", cfg.Lifecycle.TerminatedDeleteAMI)
@@ -26,7 +27,11 @@ func TestDefaultDurationsParse(t *testing.T) {
 
 	cfg := Defaults()
 
-	d, err := cfg.Lifecycle.IdleStopDuration()
+	d, err := cfg.Lifecycle.GracePeriodDuration()
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Minute, d)
+
+	d, err = cfg.Lifecycle.IdleStopDuration()
 	require.NoError(t, err)
 	assert.Equal(t, 10*time.Minute, d)
 

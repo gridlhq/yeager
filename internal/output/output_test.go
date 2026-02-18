@@ -402,3 +402,385 @@ func TestInfof_JSON(t *testing.T) {
 	assert.Equal(t, "info", got["type"])
 	assert.Equal(t, "count: 42, name: test", got["message"])
 }
+
+// ── Success ──────────────────────────────────────────────────
+
+func TestSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    Mode
+		msg     string
+		wantOut string
+		wantErr string
+	}{
+		{
+			name:    "text mode prints done: prefix",
+			mode:    ModeText,
+			msg:     "instance launched",
+			wantOut: "yeager | done: instance launched\n",
+			wantErr: "",
+		},
+		{
+			name:    "quiet mode suppresses",
+			mode:    ModeQuiet,
+			msg:     "instance launched",
+			wantOut: "",
+			wantErr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out, errBuf bytes.Buffer
+			w := NewWithWriters(&out, &errBuf, tt.mode)
+			w.Success(tt.msg)
+			assert.Equal(t, tt.wantOut, out.String())
+			assert.Equal(t, tt.wantErr, errBuf.String())
+		})
+	}
+}
+
+func TestSuccess_JSON(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := NewWithWriters(&buf, &bytes.Buffer{}, ModeJSON)
+	w.Success("instance launched")
+
+	var got map[string]string
+	err := json.Unmarshal(buf.Bytes(), &got)
+	require.NoError(t, err)
+	assert.Equal(t, "info", got["type"])
+	assert.Equal(t, "instance launched", got["message"])
+}
+
+// ── Warn ─────────────────────────────────────────────────────
+
+func TestWarn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    Mode
+		msg     string
+		fix     string
+		wantOut string
+		wantErr string
+	}{
+		{
+			name:    "text mode with fix goes to stderr",
+			mode:    ModeText,
+			msg:     "disk nearly full",
+			fix:     "consider upgrading",
+			wantOut: "",
+			wantErr: "yeager | warning: disk nearly full\nyeager | consider upgrading\n",
+		},
+		{
+			name:    "text mode without fix",
+			mode:    ModeText,
+			msg:     "disk nearly full",
+			fix:     "",
+			wantOut: "",
+			wantErr: "yeager | warning: disk nearly full\n",
+		},
+		{
+			name:    "quiet mode still shows warnings",
+			mode:    ModeQuiet,
+			msg:     "disk nearly full",
+			fix:     "consider upgrading",
+			wantOut: "",
+			wantErr: "yeager | warning: disk nearly full\nyeager | consider upgrading\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out, errBuf bytes.Buffer
+			w := NewWithWriters(&out, &errBuf, tt.mode)
+			w.Warn(tt.msg, tt.fix)
+			assert.Equal(t, tt.wantOut, out.String())
+			assert.Equal(t, tt.wantErr, errBuf.String())
+		})
+	}
+}
+
+func TestWarn_JSON(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := NewWithWriters(&buf, &bytes.Buffer{}, ModeJSON)
+	w.Warn("disk nearly full", "consider upgrading")
+
+	var got map[string]string
+	err := json.Unmarshal(buf.Bytes(), &got)
+	require.NoError(t, err)
+	// Warn uses writeJSONError so type is "error" — intentional.
+	assert.Equal(t, "error", got["type"])
+	assert.Equal(t, "disk nearly full", got["message"])
+	assert.Equal(t, "consider upgrading", got["fix"])
+}
+
+func TestWarn_JSON_WithoutFix(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := NewWithWriters(&buf, &bytes.Buffer{}, ModeJSON)
+	w.Warn("disk nearly full", "")
+
+	var got map[string]string
+	err := json.Unmarshal(buf.Bytes(), &got)
+	require.NoError(t, err)
+	assert.Equal(t, "error", got["type"])
+	_, hasFix := got["fix"]
+	assert.False(t, hasFix, "fix field should be absent when empty")
+}
+
+// ── Hint ─────────────────────────────────────────────────────
+
+func TestHint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    Mode
+		msg     string
+		wantOut string
+		wantErr string
+	}{
+		{
+			name:    "text mode prints arrow prefix to stdout",
+			mode:    ModeText,
+			msg:     "run 'yeager init' to get started",
+			wantOut: "yeager | → run 'yeager init' to get started\n",
+			wantErr: "",
+		},
+		{
+			name:    "quiet mode suppresses hints",
+			mode:    ModeQuiet,
+			msg:     "run 'yeager init' to get started",
+			wantOut: "",
+			wantErr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out, errBuf bytes.Buffer
+			w := NewWithWriters(&out, &errBuf, tt.mode)
+			w.Hint(tt.msg)
+			assert.Equal(t, tt.wantOut, out.String())
+			assert.Equal(t, tt.wantErr, errBuf.String())
+		})
+	}
+}
+
+func TestHint_JSON(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := NewWithWriters(&buf, &bytes.Buffer{}, ModeJSON)
+	w.Hint("try: yg echo 'hello world'")
+
+	var got map[string]string
+	err := json.Unmarshal(buf.Bytes(), &got)
+	require.NoError(t, err)
+	assert.Equal(t, "info", got["type"])
+	assert.Equal(t, "try: yg echo 'hello world'", got["message"])
+}
+
+// ── Spinner (non-TTY fallback) ───────────────────────────────
+
+func TestStartSpinner_NonTTY_FallsBackToInfo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    Mode
+		wantOut string
+	}{
+		{
+			name:    "text mode falls back to Info",
+			mode:    ModeText,
+			wantOut: "yeager | provisioning...\n",
+		},
+		{
+			name:    "quiet mode suppresses",
+			mode:    ModeQuiet,
+			wantOut: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			w := NewWithWriters(&out, &bytes.Buffer{}, tt.mode)
+			w.StartSpinner("provisioning...")
+			assert.Equal(t, tt.wantOut, out.String())
+		})
+	}
+}
+
+func TestStartSpinner_JSON(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := NewWithWriters(&buf, &bytes.Buffer{}, ModeJSON)
+	w.StartSpinner("provisioning...")
+
+	var got map[string]string
+	err := json.Unmarshal(buf.Bytes(), &got)
+	require.NoError(t, err)
+	assert.Equal(t, "info", got["type"])
+	assert.Equal(t, "provisioning...", got["message"])
+}
+
+func TestUpdateSpinner_NoActiveSpinner_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	w := NewWithWriters(&out, &bytes.Buffer{}, ModeText)
+	// Should not panic when no spinner is active.
+	w.UpdateSpinner("50% done")
+	assert.Empty(t, out.String(), "UpdateSpinner should produce no output without active spinner")
+}
+
+func TestStopSpinner_NonTTY(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    Mode
+		msg     string
+		success bool
+		wantOut string
+	}{
+		{
+			name:    "text mode prints to stdout",
+			mode:    ModeText,
+			msg:     "VM ready",
+			success: true,
+			wantOut: "yeager | VM ready\n",
+		},
+		{
+			name:    "text mode failure also prints to stdout",
+			mode:    ModeText,
+			msg:     "failed",
+			success: false,
+			wantOut: "yeager | failed\n",
+		},
+		{
+			name:    "quiet mode suppresses",
+			mode:    ModeQuiet,
+			msg:     "VM ready",
+			success: true,
+			wantOut: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			w := NewWithWriters(&out, &bytes.Buffer{}, tt.mode)
+			w.StopSpinner(tt.msg, tt.success)
+			assert.Equal(t, tt.wantOut, out.String())
+		})
+	}
+}
+
+func TestStopSpinner_JSON(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := NewWithWriters(&buf, &bytes.Buffer{}, ModeJSON)
+	w.StopSpinner("done provisioning", true)
+
+	var got map[string]string
+	err := json.Unmarshal(buf.Bytes(), &got)
+	require.NoError(t, err)
+	assert.Equal(t, "info", got["type"])
+	assert.Equal(t, "done provisioning", got["message"])
+}
+
+func TestSpinnerSequence_NonTTY(t *testing.T) {
+	t.Parallel()
+
+	// Verify the full Start -> Update -> Stop sequence in non-TTY mode.
+	var out bytes.Buffer
+	w := NewWithWriters(&out, &bytes.Buffer{}, ModeText)
+
+	w.StartSpinner("syncing files...")
+	w.UpdateSpinner("syncing files (50%)...") // no-op in non-TTY
+	w.StopSpinner("synced 42 files", true)
+
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	require.Len(t, lines, 2, "should have StartSpinner fallback + StopSpinner output")
+	assert.Equal(t, "yeager | syncing files...", lines[0])
+	assert.Equal(t, "yeager | synced 42 files", lines[1])
+}
+
+// ── ColorOut / Mode / WriteJSON / SupportsColor ──────────────
+
+func TestColorOut_NonTTY(t *testing.T) {
+	t.Parallel()
+
+	w := NewWithWriters(&bytes.Buffer{}, &bytes.Buffer{}, ModeText)
+	assert.False(t, w.ColorOut(), "bytes.Buffer should not be detected as color terminal")
+}
+
+func TestMode_ReturnsCorrectMode(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []Mode{ModeText, ModeJSON, ModeQuiet} {
+		w := NewWithWriters(&bytes.Buffer{}, &bytes.Buffer{}, mode)
+		assert.Equal(t, mode, w.Mode())
+	}
+}
+
+func TestWriteJSON(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := NewWithWriters(&buf, &bytes.Buffer{}, ModeText)
+
+	type payload struct {
+		State string `json:"state"`
+		ID    string `json:"id"`
+	}
+	err := w.WriteJSON(payload{State: "running", ID: "i-123"})
+	require.NoError(t, err)
+
+	var got payload
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	assert.Equal(t, "running", got.State)
+	assert.Equal(t, "i-123", got.ID)
+}
+
+func TestWriteJSON_MarshalError(t *testing.T) {
+	t.Parallel()
+
+	w := NewWithWriters(&bytes.Buffer{}, &bytes.Buffer{}, ModeText)
+	err := w.WriteJSON(make(chan int))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshaling JSON")
+}
+
+func TestSupportsColor_NonTTY(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, SupportsColor(&bytes.Buffer{}), "bytes.Buffer is not a color terminal")
+}
+
+func TestSetupSlog_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	// Verify SetupSlog doesn't panic in either mode.
+	SetupSlog(true)
+	SetupSlog(false)
+}

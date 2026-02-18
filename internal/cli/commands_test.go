@@ -15,6 +15,7 @@ import (
 	"github.com/gridlhq/yeager/internal/output"
 	"github.com/gridlhq/yeager/internal/project"
 	"github.com/gridlhq/yeager/internal/provider"
+	"github.com/gridlhq/yeager/internal/provision"
 	"github.com/gridlhq/yeager/internal/state"
 	fkstorage "github.com/gridlhq/yeager/internal/storage"
 	gossh "golang.org/x/crypto/ssh"
@@ -149,6 +150,43 @@ func saveTestVMState(t *testing.T, store *state.Store, hash string) {
 		ProjectDir: "/home/user/myproject",
 	})
 	require.NoError(t, err)
+}
+
+// --- AWS credential status tests ---
+
+func TestRunStatus_ShowsAWSCredentialStatus(t *testing.T) {
+	t.Parallel()
+
+	t.Run("shows account ID when credentials are valid", func(t *testing.T) {
+		t.Parallel()
+		cc, stdout, _ := testCmdContext(t, &mockProvider{})
+		cc.CheckAWSCredStatus = func(ctx context.Context) (string, error) {
+			return "123456789012", nil
+		}
+		err := RunStatus(context.Background(), cc)
+		require.NoError(t, err)
+		assert.Contains(t, stdout.String(), "AWS: ok (account 123456789012)")
+	})
+
+	t.Run("shows not verified when credentials fail", func(t *testing.T) {
+		t.Parallel()
+		cc, stdout, _ := testCmdContext(t, &mockProvider{})
+		cc.CheckAWSCredStatus = func(ctx context.Context) (string, error) {
+			return "", fmt.Errorf("ExpiredTokenException")
+		}
+		err := RunStatus(context.Background(), cc)
+		require.NoError(t, err)
+		assert.Contains(t, stdout.String(), "AWS: not verified")
+	})
+
+	t.Run("skips when CheckAWSCredStatus is nil", func(t *testing.T) {
+		t.Parallel()
+		cc, stdout, _ := testCmdContext(t, &mockProvider{})
+		// CheckAWSCredStatus is nil by default in testCmdContext.
+		err := RunStatus(context.Background(), cc)
+		require.NoError(t, err)
+		assert.NotContains(t, stdout.String(), "AWS:")
+	})
 }
 
 // --- Status tests ---
@@ -451,7 +489,7 @@ func TestRunUp_LoadVMCorruptError(t *testing.T) {
 	corruptFile := fmt.Sprintf("%s/projects/%s/vm.json", cc.State.BaseDir(), cc.Project.Hash)
 	require.NoError(t, os.WriteFile(corruptFile, []byte("not json{{{"), 0o644))
 
-	err = RunUp(context.Background(), cc)
+	err = RunUp(context.Background(), cc, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loading VM state")
 }
@@ -754,18 +792,18 @@ func TestRunDestroy(t *testing.T) {
 				}, nil
 			},
 		}
-		cc, stdout, _ := testCmdContext(t, prov)
+		cc, stdout, stderr := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
 		// Without --force, should show warning and exit without destroying
 		err := RunDestroyWithOptions(context.Background(), cc, DestroyOptions{Force: false})
 		require.NoError(t, err, "should exit cleanly with warning, not error")
-		output := stdout.String()
-		assert.Contains(t, output, "warning:", "should show warning")
-		assert.Contains(t, output, "cached build artifacts", "should mention cached artifacts")
-		assert.Contains(t, output, "installed packages", "should mention installed packages")
-		assert.Contains(t, output, "accumulated state", "should mention accumulated state")
-		assert.Contains(t, output, "--force", "should mention --force flag")
+		// Warning goes to stderr (via w.Warn), details and hint go to stdout.
+		assert.Contains(t, stderr.String(), "warning:", "should show warning")
+		assert.Contains(t, stdout.String(), "cached build artifacts", "should mention cached artifacts")
+		assert.Contains(t, stdout.String(), "installed packages", "should mention installed packages")
+		assert.Contains(t, stdout.String(), "accumulated state", "should mention accumulated state")
+		assert.Contains(t, stdout.String(), "--force", "should mention --force flag")
 
 		// VM should still exist (not destroyed)
 		_, loadErr := cc.State.LoadVM(cc.Project.Hash)
@@ -843,13 +881,16 @@ func TestRunUp(t *testing.T) {
 			},
 		}
 		cc, stdout, _ := testCmdContext(t, prov)
+		cc.ConnectSSH = func(ctx context.Context, vmInfo *provider.VMInfo) (*gossh.Client, error) {
+			return nil, nil
+		}
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.NoError(t, err)
 		assert.True(t, createCalled)
 		assert.True(t, waitCalled)
-		assert.Contains(t, stdout.String(), "creating one")
-		assert.Contains(t, stdout.String(), "VM running")
+		assert.Contains(t, stdout.String(), "creating one in us-east-1")
+		assert.Contains(t, stdout.String(), "VM ready")
 
 		// Should have saved state with setup hash.
 		vmState, err := cc.State.LoadVM(cc.Project.Hash)
@@ -872,7 +913,7 @@ func TestRunUp(t *testing.T) {
 		cc, stdout, _ := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.NoError(t, err)
 		assert.Contains(t, stdout.String(), "VM running")
 		assert.Contains(t, stdout.String(), "i-running")
@@ -901,7 +942,7 @@ func TestRunUp(t *testing.T) {
 		cc, stdout, _ := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.NoError(t, err)
 		assert.True(t, startCalled)
 		assert.Contains(t, stdout.String(), "starting stopped VM")
@@ -938,9 +979,12 @@ func TestRunUp(t *testing.T) {
 			},
 		}
 		cc, stdout, _ := testCmdContext(t, prov)
+		cc.ConnectSSH = func(ctx context.Context, vmInfo *provider.VMInfo) (*gossh.Client, error) {
+			return nil, nil
+		}
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.NoError(t, err)
 		assert.True(t, createCalled)
 		assert.Contains(t, stdout.String(), "no longer exists")
@@ -967,7 +1011,7 @@ func TestRunUp(t *testing.T) {
 		cc, stdout, _ := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.NoError(t, err)
 		assert.True(t, waitCalled)
 		assert.Contains(t, stdout.String(), "VM running")
@@ -987,18 +1031,48 @@ func TestRunUp(t *testing.T) {
 		cc, stdout, _ := testCmdContext(t, prov)
 		// Save state with a different setup hash to simulate config change.
 		err := cc.State.SaveVM(cc.Project.Hash, state.VMState{
-			InstanceID: "i-running",
-			Region:     "us-east-1",
-			Created:    time.Now().UTC(),
-			ProjectDir: "/home/user/myproject",
-			SetupHash:  "oldhash12345678",
+			InstanceID:       "i-running",
+			Region:           "us-east-1",
+			Created:          time.Now().UTC(),
+			ProjectDir:       "/home/user/myproject",
+			SetupHash:        "oldhash12345678",
+			CloudInitVersion: provision.CloudInitVersion,
 		})
 		require.NoError(t, err)
 
-		err = RunUp(context.Background(), cc)
+		err = RunUp(context.Background(), cc, false)
 		require.NoError(t, err)
 		assert.Contains(t, stdout.String(), "setup changed")
 		assert.Contains(t, stdout.String(), "yg destroy")
+	})
+
+	t.Run("outdated cloud-init version errors", func(t *testing.T) {
+		t.Parallel()
+		prov := &mockProvider{
+			findVMFn: func(ctx context.Context, projectHash string) (*provider.VMInfo, error) {
+				return &provider.VMInfo{
+					InstanceID: "i-running",
+					State:      "running",
+					PublicIP:   "1.2.3.4",
+					Region:     "us-east-1",
+				}, nil
+			},
+		}
+		cc, _, _ := testCmdContext(t, prov)
+		// Save state with an old cloud-init version (version 99 to ensure it's different).
+		err := cc.State.SaveVM(cc.Project.Hash, state.VMState{
+			InstanceID:       "i-running",
+			Region:           "us-east-1",
+			Created:          time.Now().UTC(),
+			ProjectDir:       "/home/user/myproject",
+			CloudInitVersion: 99,
+		})
+		require.NoError(t, err)
+
+		err = RunUp(context.Background(), cc, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "VM is outdated and needs to be recreated")
+		assert.Contains(t, err.Error(), "yg destroy")
 	})
 
 	t.Run("propagates create error", func(t *testing.T) {
@@ -1010,7 +1084,7 @@ func TestRunUp(t *testing.T) {
 		}
 		cc, _, _ := testCmdContext(t, prov)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "insufficient capacity")
 	})
@@ -1024,7 +1098,7 @@ func TestRunUp(t *testing.T) {
 		}
 		cc, _, _ := testCmdContext(t, prov)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sg creation failed")
 	})
@@ -1038,7 +1112,7 @@ func TestRunUp(t *testing.T) {
 		}
 		cc, _, _ := testCmdContext(t, prov)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "bucket creation failed")
 	})
@@ -1053,7 +1127,7 @@ func TestRunUp(t *testing.T) {
 		cc, _, _ := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "querying VM state")
 	})
@@ -1074,7 +1148,7 @@ func TestRunUp(t *testing.T) {
 		}
 		cc, _, _ := testCmdContext(t, prov)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "exceeded max wait time")
 	})
@@ -1096,7 +1170,7 @@ func TestRunUp(t *testing.T) {
 		cc, _, _ := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "cannot start instance")
 	})
@@ -1121,7 +1195,7 @@ func TestRunUp(t *testing.T) {
 		cc, _, _ := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "wait timed out")
 	})
@@ -1143,7 +1217,7 @@ func TestRunUp(t *testing.T) {
 		cc, _, _ := testCmdContext(t, prov)
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "pending wait failed")
 	})
@@ -1182,9 +1256,12 @@ func TestRunUp(t *testing.T) {
 			},
 		}
 		cc, stdout, _ := testCmdContext(t, prov)
+		cc.ConnectSSH = func(ctx context.Context, vmInfo *provider.VMInfo) (*gossh.Client, error) {
+			return nil, nil
+		}
 		saveTestVMState(t, cc.State, cc.Project.Hash)
 
-		err := RunUp(context.Background(), cc)
+		err := RunUp(context.Background(), cc, false)
 		require.NoError(t, err)
 		assert.True(t, createCalled)
 		assert.Contains(t, stdout.String(), "creating a new")

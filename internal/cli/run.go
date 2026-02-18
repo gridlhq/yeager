@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gridlhq/yeager/internal/monitor"
 	"github.com/gridlhq/yeager/internal/output"
 	"github.com/gridlhq/yeager/internal/provider"
 	"github.com/gridlhq/yeager/internal/provision"
@@ -33,35 +34,45 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 	w := cc.Output
 	w.Infof("project: %s", cc.Project.DisplayName)
 
+	// Step 0: Cancel any existing grace period monitor (new activity).
+	// This is best-effort — if it fails, we still proceed with the command.
+	cancelGracePeriodMonitor(cc)
+
 	// Step 1: Ensure VM is running.
 	vmInfo, freshVM, err := ensureVMRunning(ctx, cc)
 	if err != nil {
-		printClassifiedError(w, err)
+		printError(w, err)
 		return 1, displayed(err)
 	}
 
 	// Step 2: Sync files.
-	w.Info("syncing files...")
+	w.StartSpinner("syncing files...")
 	syncResult, err := cc.RunSync(ctx, cc, vmInfo)
 	if err != nil {
+		w.StopSpinner("sync failed", false)
 		return 1, fmt.Errorf("syncing files: %w", err)
 	}
 	if syncResult != nil {
-		w.Info(formatSyncResult(syncResult, freshVM))
+		w.StopSpinner(formatSyncResult(syncResult, freshVM), true)
+	} else {
+		w.StopSpinner("synced", true)
 	}
 
 	// Step 3: Establish SSH connection for command execution.
 	if freshVM {
-		w.Info("installing toolchain (this runs once per VM)...")
+		w.StartSpinner("installing toolchain (first run)...")
+	} else {
+		w.StartSpinner("connecting...")
 	}
-	w.Info("connecting...")
 	client, err := cc.ConnectSSH(ctx, vmInfo)
 	if err != nil {
+		w.StopSpinner("connection failed", false)
 		if freshVM {
-			w.Info("hint: the VM may still be provisioning — wait a minute and try again")
+			w.Hint("the VM may still be provisioning — wait a minute and try again")
 		}
 		return 1, fmt.Errorf("SSH connection failed: %w", err)
 	}
+	w.StopSpinner("connected", true)
 	if client != nil {
 		defer client.Close()
 	}
@@ -69,9 +80,7 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 	// Step 4: Execute command.
 	runID := fkexec.GenerateRunID()
 	w.Infof("running: %s", command)
-	w.Info("")
-	w.Info("Ctrl+C stops streaming. The command keeps running on the VM.")
-	w.Info("Re-attach: yg logs    Status: yg status")
+	w.Hint("Ctrl+C detaches — the command keeps running on the VM.")
 	w.Separator()
 
 	var stdoutBuf, stderrBuf bytes.Buffer
@@ -90,11 +99,8 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 	// Check for Ctrl+C (SIGINT) — detach from stream, don't kill remote process.
 	if ctx.Err() != nil {
 		elapsed := time.Since(startTime).Truncate(time.Second)
-		w.Info("detached from output stream")
-		w.Infof("command still running on VM (elapsed %s)", formatDuration(elapsed))
-		w.Info("re-attach:  yg logs")
-		w.Info("status:     yg status")
-		w.Info("cancel:     yg kill")
+		w.Infof("detached (%s elapsed) — command still running on VM", formatDuration(elapsed))
+		w.Hint("re-attach: yg logs    cancel: yg kill")
 		// Save last run ID so yg logs can re-attach (best-effort).
 		if err := cc.State.SaveLastRun(cc.Project.Hash, runID.String()); err != nil {
 			slog.Debug("failed to save last run ID", "error", err)
@@ -108,7 +114,11 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 
 	// Step 5: Report result and save last run ID.
 	duration := result.Duration().Truncate(time.Second)
-	w.Infof("done (exit %d) in %s", result.ExitCode, formatDuration(duration))
+	if result.ExitCode == 0 {
+		w.Success(fmt.Sprintf("done (exit 0) in %s", formatDuration(duration)))
+	} else {
+		w.Warn(fmt.Sprintf("done (exit %d) in %s", result.ExitCode, formatDuration(duration)), "")
+	}
 
 	// Save last run ID for `yg logs` (best-effort).
 	if err := cc.State.SaveLastRun(cc.Project.Hash, runID.String()); err != nil {
@@ -128,7 +138,7 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 
 	// Step 7: Upload output to S3 (best-effort).
 	if err := uploadOutput(ctx, cc, runID, command, result, stdoutBuf.Bytes(), stderrBuf.Bytes()); err != nil {
-		w.Infof("warning: failed to upload output to S3: %s", err)
+		w.Warn(fmt.Sprintf("failed to upload output to S3: %s", err), "")
 	} else {
 		bucketName, err := cc.Provider.BucketName(ctx)
 		if err != nil {
@@ -152,34 +162,80 @@ func RunCommand(ctx context.Context, cc *cmdContext, command string) (int, error
 	return result.ExitCode, nil
 }
 
-// checkIdleAndStop does a single check after a command finishes: if no other
-// commands are running on the VM, stop it immediately to save costs.
+// checkIdleAndStop checks if the VM should be stopped after a command finishes.
+// If no other commands are running, starts a background monitor that will stop
+// the VM after the grace period elapses. This keeps the VM "warm" for quick
+// follow-up commands while automatically saving costs when idle.
 // This is a best-effort operation — failures are logged, not returned.
 func checkIdleAndStop(ctx context.Context, cc *cmdContext, vmInfo *provider.VMInfo) {
-	idleTimeout, err := cc.Config.Lifecycle.IdleStopDuration()
-	if err != nil || idleTimeout <= 0 {
+	gracePeriod, err := cc.Config.Lifecycle.GracePeriodDuration()
+	if err != nil || gracePeriod <= 0 {
+		// If no grace period configured, don't start monitor.
 		return
 	}
 
+	// Check if there are active commands.
 	listRuns := cc.ListRuns
 	if listRuns == nil {
 		listRuns = fkexec.ListRuns
 	}
 
-	monitor := NewIdleMonitor(IdleMonitorOpts{
-		IdleTimeout: idleTimeout,
-		InstanceID:  vmInfo.InstanceID,
-		Provider:    cc.Provider,
-		ConnectSSH:  cc.ConnectSSH,
-		ListRuns:    listRuns,
-		VMInfo:      vmInfo,
-	})
-	if monitor == nil {
+	client, err := cc.ConnectSSH(ctx, vmInfo)
+	if err != nil {
+		slog.Debug("checkIdleAndStop: SSH failed", "error", err)
+		return
+	}
+	if client != nil {
+		defer client.Close()
+	}
+
+	runs, err := listRuns(client)
+	if err != nil {
+		slog.Debug("checkIdleAndStop: list runs failed", "error", err)
 		return
 	}
 
-	if monitor.CheckAndStop(ctx) {
-		cc.Output.Info("VM stopped (no active commands)")
+	if len(runs) == 0 {
+		// No active commands — start background monitor to stop VM after grace period.
+		m := monitor.New(cc.Project.Hash, cc.State, cc.Provider, gracePeriod)
+		if err := m.Start(); err != nil {
+			slog.Warn("failed to start grace period monitor", "error", err)
+			return
+		}
+
+		cc.Output.Infof("VM idle (auto-stopping in %s — run another command to cancel)", formatDuration(gracePeriod))
+		cc.Output.Hint("change grace period: .yeager.toml lifecycle.grace_period")
+	}
+}
+
+// cancelGracePeriodMonitor stops any running grace period monitor for this project.
+// This should be called at the start of every command to cancel pending auto-stop.
+// This is best-effort — failures are logged, not returned.
+func cancelGracePeriodMonitor(cc *cmdContext) {
+	gracePeriod, err := cc.Config.Lifecycle.GracePeriodDuration()
+	if err != nil || gracePeriod <= 0 {
+		return
+	}
+
+	m := monitor.New(cc.Project.Hash, cc.State, cc.Provider, gracePeriod)
+	if err := m.Stop(); err != nil {
+		slog.Debug("failed to stop grace period monitor", "error", err)
+	}
+}
+
+// cancelGracePeriodMonitorBestEffort cancels any grace period monitor.
+// Unlike cancelGracePeriodMonitor, this doesn't require a grace period config.
+// Useful for explicit stop/up commands where we want to cancel regardless.
+func cancelGracePeriodMonitorBestEffort(cc *cmdContext) {
+	// Try to get grace period from config, but proceed even if not configured.
+	gracePeriod, err := cc.Config.Lifecycle.GracePeriodDuration()
+	if err != nil || gracePeriod <= 0 {
+		gracePeriod = 1 // dummy value for monitor creation
+	}
+
+	m := monitor.New(cc.Project.Hash, cc.State, cc.Provider, gracePeriod)
+	if err := m.Stop(); err != nil {
+		slog.Debug("failed to stop grace period monitor", "error", err)
 	}
 }
 
@@ -204,45 +260,74 @@ func ensureVMRunning(ctx context.Context, cc *cmdContext) (*provider.VMInfo, boo
 		if info != nil {
 			switch info.State {
 			case "running":
+				// Check for outdated cloud-init version.
+				if vmState.CloudInitVersion != 0 && vmState.CloudInitVersion != provision.CloudInitVersion {
+					return nil, false, fmt.Errorf("VM is outdated and needs to be recreated\n       run: yg destroy && yg <command>")
+				}
 				currentHash := provision.SetupHash(cc.Config.Setup)
 				if vmState.SetupHash != "" && vmState.SetupHash != currentHash {
 					w.Info("setup changed — VM needs reprovisioning")
 					w.Info("run: yg destroy && yg up")
 				}
-				w.Infof("VM running (%s)", info.InstanceID)
-				return info, false, nil
+				// Check if compute size has changed.
+				expectedType, sizeErr := provider.InstanceTypeForSize(cc.Config.Compute.Size)
+				if sizeErr == nil && info.InstanceType != "" && string(expectedType) != info.InstanceType {
+					w.Infof("size changed (%s → %s) — recreating VM...", info.InstanceType, string(expectedType))
+					if termErr := cc.Provider.TerminateVM(ctx, info.InstanceID); termErr != nil {
+						return nil, false, fmt.Errorf("terminating VM for size change: %w", termErr)
+					}
+					_ = cc.State.DeleteVM(cc.Project.Hash)
+					// Fall through to createVMForRun below.
+				} else {
+					w.Infof("VM running (%s)", info.InstanceID)
+					return info, false, nil
+				}
 			case "stopped":
-				w.Infof("starting stopped VM %s...", info.InstanceID)
+				// Check if compute size has changed before starting.
+				expectedType, sizeErr := provider.InstanceTypeForSize(cc.Config.Compute.Size)
+				if sizeErr == nil && info.InstanceType != "" && string(expectedType) != info.InstanceType {
+					w.Infof("size changed (%s → %s) — recreating VM...", info.InstanceType, string(expectedType))
+					if termErr := cc.Provider.TerminateVM(ctx, info.InstanceID); termErr != nil {
+						return nil, false, fmt.Errorf("terminating VM for size change: %w", termErr)
+					}
+					_ = cc.State.DeleteVM(cc.Project.Hash)
+					break // fall through to createVMForRun below
+				}
+				w.StartSpinner(fmt.Sprintf("starting stopped VM %s...", info.InstanceID))
 				if err := cc.Provider.StartVM(ctx, info.InstanceID); err != nil {
+					w.StopSpinner("failed to start VM", false)
 					return nil, false, err
 				}
-				w.Info("waiting for VM to be ready...")
 				err := cc.Provider.WaitUntilRunningWithProgress(ctx, info.InstanceID, func(elapsed time.Duration) {
-					w.Info(provider.FormatProgressMessage(elapsed))
+					w.UpdateSpinner(provider.FormatProgressMessage(elapsed))
 				})
 				if err != nil {
+					w.StopSpinner("VM failed to start", false)
 					return nil, false, err
 				}
 				// Re-query for updated IP and AZ.
 				info, err = cc.Provider.FindVM(ctx, cc.Project.Hash)
 				if err != nil {
+					w.StopSpinner("VM started", true)
 					return nil, false, fmt.Errorf("querying VM after start: %w", err)
 				}
-				w.Infof("VM running (%s)", info.InstanceID)
+				w.StopSpinner(fmt.Sprintf("VM running (%s)", info.InstanceID), true)
 				return info, false, nil
 			case "pending":
-				w.Infof("VM starting (%s)...", info.InstanceID)
+				w.StartSpinner(fmt.Sprintf("VM starting (%s)...", info.InstanceID))
 				err := cc.Provider.WaitUntilRunningWithProgress(ctx, info.InstanceID, func(elapsed time.Duration) {
-					w.Info(provider.FormatProgressMessage(elapsed))
+					w.UpdateSpinner(provider.FormatProgressMessage(elapsed))
 				})
 				if err != nil {
+					w.StopSpinner("VM failed to start", false)
 					return nil, false, err
 				}
 				info, err = cc.Provider.FindVM(ctx, cc.Project.Hash)
 				if err != nil {
+					w.StopSpinner("VM started", true)
 					return nil, false, fmt.Errorf("querying VM after wait: %w", err)
 				}
-				w.Infof("VM running (%s)", info.InstanceID)
+				w.StopSpinner(fmt.Sprintf("VM running (%s)", info.InstanceID), true)
 				return info, false, nil
 			default:
 				w.Infof("VM %s is %s — creating a new one", info.InstanceID, info.State)
@@ -251,7 +336,7 @@ func ensureVMRunning(ctx context.Context, cc *cmdContext) (*provider.VMInfo, boo
 			w.Infof("VM %s no longer exists — creating a new one", vmState.InstanceID)
 		}
 	} else {
-		w.Info("no VM found — creating one")
+		w.Infof("no VM found — creating one in %s", cc.Provider.Region())
 	}
 
 	info, err := createVMForRun(ctx, cc)
@@ -290,7 +375,11 @@ func createVMForRun(ctx context.Context, cc *cmdContext) (*provider.VMInfo, erro
 		w.Infof("VM size: %s", cc.Config.Compute.Size)
 	}
 
-	w.Infof("launching instance... (%s)", cc.Provider.Region())
+	if instanceType != "" {
+		w.StartSpinner(fmt.Sprintf("launching %s in %s...", instanceType, cc.Provider.Region()))
+	} else {
+		w.StartSpinner(fmt.Sprintf("launching instance in %s...", cc.Provider.Region()))
+	}
 
 	info, err := cc.Provider.CreateVM(ctx, provider.CreateVMOpts{
 		ProjectHash:     cc.Project.Hash,
@@ -300,39 +389,107 @@ func createVMForRun(ctx context.Context, cc *cmdContext) (*provider.VMInfo, erro
 		UserData:        userData,
 	})
 	if err != nil {
+		w.StopSpinner("failed to launch VM", false)
 		return nil, err
 	}
 
-	w.Infof("instance %s launched — waiting for it to be ready...", info.InstanceID)
+	w.UpdateSpinner(fmt.Sprintf("instance %s launched — waiting for it to be ready...", info.InstanceID))
 	err = cc.Provider.WaitUntilRunningWithProgress(ctx, info.InstanceID, func(elapsed time.Duration) {
-		w.Info(provider.FormatProgressMessage(elapsed))
+		w.UpdateSpinner(provider.FormatProgressMessage(elapsed))
 	})
 	if err != nil {
+		w.StopSpinner("VM failed to start", false)
 		return nil, err
 	}
 
 	// Re-query for public IP and AZ.
 	liveInfo, err := cc.Provider.FindVM(ctx, cc.Project.Hash)
 	if err != nil {
+		w.StopSpinner("VM launched", true)
 		return nil, fmt.Errorf("querying new VM: %w", err)
 	}
 	if liveInfo == nil {
+		w.StopSpinner("VM launched", true)
 		return nil, fmt.Errorf("VM %s not found after creation", info.InstanceID)
 	}
 
 	setupHash := provision.SetupHash(cc.Config.Setup)
 	if err := cc.State.SaveVM(cc.Project.Hash, state.VMState{
-		InstanceID: liveInfo.InstanceID,
-		Region:     liveInfo.Region,
-		Created:    time.Now().UTC(),
-		ProjectDir: cc.Project.AbsPath,
-		SetupHash:  setupHash,
+		InstanceID:       liveInfo.InstanceID,
+		Region:           liveInfo.Region,
+		Created:          time.Now().UTC(),
+		ProjectDir:       cc.Project.AbsPath,
+		SetupHash:        setupHash,
+		CloudInitVersion: provision.CloudInitVersion,
 	}); err != nil {
+		w.StopSpinner("VM launched", true)
 		return nil, fmt.Errorf("saving VM state: %w", err)
 	}
 
-	w.Infof("VM running (%s)", liveInfo.InstanceID)
+	w.StopSpinner(fmt.Sprintf("VM ready (%s)", liveInfo.InstanceID), true)
+
+	// Wait for SSH to become available (cloud-init needs ~30s to start sshd).
+	// The instance is "running" but SSH may not be ready yet.
+	// Poll with exponential backoff instead of sleeping.
+	w.StartSpinner("connecting via SSH...")
+	if err := waitForSSH(ctx, cc, liveInfo, w); err != nil {
+		w.StopSpinner("SSH connection failed", false)
+		return nil, fmt.Errorf("waiting for SSH: %w", err)
+	}
+	w.StopSpinner("SSH connected", true)
+
 	return liveInfo, nil
+}
+
+// waitForSSH polls the VM until SSH is available, with exponential backoff.
+// Returns an error if SSH doesn't become available within the timeout.
+func waitForSSH(ctx context.Context, cc *cmdContext, vmInfo *provider.VMInfo, w *output.Writer) error {
+	const (
+		maxAttempts = 12           // Max retry attempts
+		initialWait = 2 * time.Second
+		maxWait     = 8 * time.Second
+	)
+
+	wait := initialWait
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Try to establish SSH connection
+		client, err := cc.ConnectSSH(ctx, vmInfo)
+		if err == nil {
+			// SSH is available (err == nil means connection succeeded).
+			// Close the client if it's non-nil (in tests it may be nil).
+			if client != nil {
+				client.Close()
+			}
+			return nil // SSH is ready — caller handles the success message
+		}
+
+		// Connection failed - check if we should retry
+		if attempt == maxAttempts {
+			w.Hint("the VM may still be provisioning — wait a minute and try again")
+			return fmt.Errorf("SSH not available after %d attempts: %w", maxAttempts, err)
+		}
+
+		// Update spinner with attempt count (every attempt for TTY).
+		w.UpdateSpinner(fmt.Sprintf("connecting via SSH (attempt %d/%d)...", attempt, maxAttempts))
+		// Also log progress every 3 attempts for non-TTY environments (CI, pipes).
+		if attempt%3 == 0 {
+			w.Infof("still waiting for SSH (attempt %d/%d)", attempt, maxAttempts)
+		}
+
+		// Wait before retry with exponential backoff
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+			// Exponential backoff with cap
+			wait *= 2
+			if wait > maxWait {
+				wait = maxWait
+			}
+		}
+	}
+
+	return fmt.Errorf("SSH not available after %d attempts", maxAttempts)
 }
 
 // defaultSyncFunc runs rsync to sync project files to the VM.
@@ -435,7 +592,7 @@ func uploadArtifacts(ctx context.Context, cc *cmdContext, client *gossh.Client, 
 
 	store, err := cc.NewStorage(ctx)
 	if err != nil {
-		w.Infof("warning: failed to connect to S3 for artifacts: %s", err)
+		w.Warn(fmt.Sprintf("failed to connect to S3 for artifacts: %s", err), "")
 		return 0
 	}
 
@@ -444,13 +601,13 @@ func uploadArtifacts(ctx context.Context, cc *cmdContext, client *gossh.Client, 
 		remotePath := remoteProjectDir + "/" + artifactPath
 		data, err := cc.ReadRemoteFile(client, remotePath)
 		if err != nil {
-			w.Infof("warning: artifact %s not found on VM", artifactPath)
+			w.Warn(fmt.Sprintf("artifact %s not found on VM", artifactPath), "")
 			slog.Debug("failed to read artifact", "path", artifactPath, "error", err)
 			continue
 		}
 
 		if err := store.UploadArtifact(ctx, cc.Project.DisplayName, runID.String(), artifactPath, data); err != nil {
-			w.Infof("warning: failed to upload artifact %s: %s", artifactPath, err)
+			w.Warn(fmt.Sprintf("failed to upload artifact %s: %s", artifactPath, err), "")
 			continue
 		}
 		uploaded++
