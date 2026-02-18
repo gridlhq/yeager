@@ -202,7 +202,7 @@ func TestInstallScript_Exists(t *testing.T) {
 	assert.Contains(t, content, "detect_os", "install script should detect OS")
 	assert.Contains(t, content, "detect_arch", "install script should detect arch")
 	assert.Contains(t, content, "sha256", "install script should verify checksums")
-	assert.Contains(t, content, "gridlhq/yeager", "install script should reference the repo")
+	assert.Contains(t, content, "GITHUB_REPO=", "install script should reference the repo")
 }
 
 func TestInstallScript_HandlesAllPlatforms(t *testing.T) {
